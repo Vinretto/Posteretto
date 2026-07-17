@@ -12,3 +12,4 @@ Things to work on:
 4. When selecting everything, it does not look like it.
 5. No drag-and-drop functionality yet (for images to import).
 6. Image rotation needs to get fixed points when perfectly horizontal or vertical.
+7. Borders on shapes are not being rendered on the final pdf file yet. Shapes come out with curved edges. I still need to add the option to make them square. 
