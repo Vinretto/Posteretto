@@ -6,6 +6,32 @@
   <title>Posteretto Studio</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Live list markers while editing. The counter scope restarts at any
+       non-list block, so a list that follows a paragraph begins at 1 again. */
+    .rich-editor > div:not([data-list]) { counter-reset: li; }
+    .rich-editor > div[data-list] {
+      display: flex; gap: 0.45em; align-items: baseline;
+    }
+    .rich-editor > div[data-list]::before {
+      flex-shrink: 0; font-weight: 600; opacity: 0.95;
+      min-width: 0.9em;
+    }
+    .rich-editor > div[data-list="disc"]::before   { content: "\2022"; }
+    .rich-editor > div[data-list="dash"]::before   { content: "\2013"; }
+    .rich-editor > div[data-list="circle"]::before { content: "\25E6"; }
+    .rich-editor > div[data-list="square"]::before { content: "\25AA"; }
+    .rich-editor > div[data-list="decimal"],
+    .rich-editor > div[data-list="paren"],
+    .rich-editor > div[data-list="lower-alpha"],
+    .rich-editor > div[data-list="upper-roman"] { counter-increment: li; }
+    .rich-editor > div[data-list="decimal"]::before     { content: counter(li) "."; min-width: 1.5em; }
+    .rich-editor > div[data-list="paren"]::before       { content: counter(li) ")"; min-width: 1.5em; }
+    .rich-editor > div[data-list="lower-alpha"]::before { content: counter(li, lower-alpha) "."; min-width: 1.5em; }
+    .rich-editor > div[data-list="upper-roman"]::before { content: counter(li, upper-roman) "."; min-width: 1.8em; }
+    .rich-editor > div[data-list] > * { flex: 1; }
+    .rich-editor:focus { outline-offset: 0; }
+  </style>
   
   <script type="importmap">
     {
@@ -58,28 +84,145 @@
       { label: 'Impact', value: 'Impact, sans-serif' }
     ];
 
-    const EXPORT_STEPS = [
-      'Rasterising vector layers at 300 DPI…',
-      'Embedding fonts & flattening transparency…',
-      'Compiling print-ready PDF…',
-    ];
-
     const SNAP_SCREEN_PX = 7;
     const HANDLE_PX = 10;
     const MIN_SIZE_MM = 20;
 
+    /* Reference poster width. Every preset below is authored at A0 width and is
+       scaled by (poster.w / BASE_W) when instantiated, so a block dropped on a
+       small canvas is proportionally small — never a giant box. */
+    const BASE_W = 841;
+
+    /* Sections are data-driven: `kind` picks the body renderer, `headerStyle`
+       picks the title treatment. Mixing the two gives the layout variety real
+       conference posters need. */
     const SECTION_PRESETS = [
-      { key: 'abstract',   label: 'Abstract',    w: 260, h: 180, fill: '#eef2ff', accent: '#4f46e5' },
-      { key: 'intro',      label: 'Introduction',w: 260, h: 220, fill: '#ecfeff', accent: '#0891b2' },
-      { key: 'methods',    label: 'Methodology', w: 260, h: 260, fill: '#f0fdf4', accent: '#16a34a' },
-      { key: 'results',    label: 'Results',     w: 300, h: 260, fill: '#fef2f2', accent: '#dc2626' },
-      { key: 'discussion', label: 'Discussion',  w: 260, h: 220, fill: '#fff7ed', accent: '#ea580c' },
-      { key: 'references', label: 'References',  w: 260, h: 150, fill: '#f8fafc', accent: '#475569' },
+      // --- Standard IMRaD blocks ---
+      { key: 'abstract',   group: 'Standard', label: 'Abstract',     kind: 'plain',    w: 260, h: 180, fill: '#eef2ff', accent: '#4f46e5' },
+      { key: 'intro',      group: 'Standard', label: 'Introduction', kind: 'plain',    w: 260, h: 220, fill: '#ecfeff', accent: '#0891b2' },
+      { key: 'methods',    group: 'Standard', label: 'Methodology',  kind: 'plain',    w: 260, h: 260, fill: '#f0fdf4', accent: '#16a34a' },
+      { key: 'results',    group: 'Standard', label: 'Results',      kind: 'plain',    w: 300, h: 260, fill: '#fef2f2', accent: '#dc2626' },
+      { key: 'discussion', group: 'Standard', label: 'Discussion',   kind: 'plain',    w: 260, h: 220, fill: '#fff7ed', accent: '#ea580c' },
+      { key: 'conclusion', group: 'Standard', label: 'Conclusions',  kind: 'plain',    w: 260, h: 200, fill: '#f5f3ff', accent: '#7c3aed' },
+      // --- Structural / layout blocks ---
+      { key: 'banner',     group: 'Layout',   label: 'Title banner', kind: 'banner',   w: 800, h: 130, fill: '#1e3a5f', accent: '#1e3a5f',
+        title: 'Your Poster Title Goes Here', text: 'A. Author¹, B. Author², C. Author¹\n¹Department, University · ²Institute', headerStyle: 'none' },
+      { key: 'figure',     group: 'Layout',   label: 'Figure + caption', kind: 'figure', w: 260, h: 240, fill: '#ffffff', accent: '#475569',
+        title: 'Figure 1', text: 'Caption describing the figure, its axes and what the reader should take from it.' },
+      { key: 'table',      group: 'Layout',   label: 'Data table',   kind: 'table',    w: 300, h: 200, fill: '#ffffff', accent: '#334155',
+        title: 'Table 1', rows: [['Group', 'n', 'Mean', 'p'], ['Control', '25', '0.25', '—'], ['Treatment', '28', '0.75', '0.03'], ['Combined', '53', '0.51', '0.04']] },
+      { key: 'callout',    group: 'Layout',   label: 'Callout / highlight', kind: 'callout', w: 300, h: 120, fill: '#fff1f2', accent: '#e11d48',
+        title: '', text: 'The single sentence you want read from ten metres away.', headerStyle: 'none', fontSize: 22 },
+      { key: 'references', group: 'Layout',   label: 'References strip', kind: 'footer', w: 800, h: 90, fill: '#334155', accent: '#334155',
+        title: 'References', text: 'Author, A. (2024) Title of the work. Journal 12; 34-56\nAuthor, B. (2023) Another reference. Journal 9; 101-118',
+        color: '#e2e8f0', fontSize: 10, headerStyle: 'inline' },
     ];
 
+    const HEADER_STYLES = [
+      { key: 'bar',       label: 'Filled bar' },
+      { key: 'tab',       label: 'Tab above' },
+      { key: 'underline', label: 'Underline' },
+      { key: 'inline',    label: 'Inline' },
+      { key: 'none',      label: 'No header' },
+    ];
+
+    /* ---- Shape library ------------------------------------------------------
+       Every shape resolves to a single SVG path string so the on-canvas renderer
+       and the export serialiser share one source of truth. `r` is the corner
+       radius in mm (0 = hard square corners).                                */
+    function shapePath(shape, w, h, r = 0) {
+      const W = Math.max(1, w), H = Math.max(1, h);
+      const cr = clamp(r, 0, Math.min(W, H) / 2);
+      const poly = (pts) => 'M ' + pts.map(([x, y]) => `${+(x * W).toFixed(3)} ${+(y * H).toFixed(3)}`).join(' L ') + ' Z';
+      const starPts = (n, inner) => {
+        const out = [];
+        for (let i = 0; i < n * 2; i++) {
+          const rad = i % 2 === 0 ? 0.5 : inner * 0.5;
+          const a = (Math.PI * i) / n - Math.PI / 2;
+          out.push([0.5 + Math.cos(a) * rad, 0.5 + Math.sin(a) * rad]);
+        }
+        return poly(out);
+      };
+      const ngon = (n, rot = -Math.PI / 2) => {
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          const a = (2 * Math.PI * i) / n + rot;
+          out.push([0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5]);
+        }
+        return poly(out);
+      };
+      switch (shape) {
+        case 'rect':
+          if (cr <= 0) return `M 0 0 L ${W} 0 L ${W} ${H} L 0 ${H} Z`;
+          return `M ${cr} 0 L ${W - cr} 0 A ${cr} ${cr} 0 0 1 ${W} ${cr} L ${W} ${H - cr} A ${cr} ${cr} 0 0 1 ${W - cr} ${H} L ${cr} ${H} A ${cr} ${cr} 0 0 1 0 ${H - cr} L 0 ${cr} A ${cr} ${cr} 0 0 1 ${cr} 0 Z`;
+        case 'ellipse':
+          return `M 0 ${H / 2} A ${W / 2} ${H / 2} 0 1 0 ${W} ${H / 2} A ${W / 2} ${H / 2} 0 1 0 0 ${H / 2} Z`;
+        case 'triangle':      return poly([[0.5, 0], [1, 1], [0, 1]]);
+        case 'triangle-down': return poly([[0, 0], [1, 0], [0.5, 1]]);
+        case 'right-tri':     return poly([[0, 0], [1, 1], [0, 1]]);
+        case 'diamond':       return poly([[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]]);
+        case 'pentagon':      return ngon(5);
+        case 'hexagon':       return ngon(6, 0);
+        case 'hexagon-v':     return ngon(6, -Math.PI / 2);
+        case 'octagon':       return ngon(8, -Math.PI / 8);
+        case 'star5':         return starPts(5, 0.42);
+        case 'star6':         return starPts(6, 0.55);
+        case 'burst':         return starPts(12, 0.72);
+        case 'parallelogram': return poly([[0.22, 0], [1, 0], [0.78, 1], [0, 1]]);
+        case 'trapezoid':     return poly([[0.22, 0], [0.78, 0], [1, 1], [0, 1]]);
+        case 'chevron':       return poly([[0, 0], [0.72, 0], [1, 0.5], [0.72, 1], [0, 1], [0.28, 0.5]]);
+        case 'arrow-right':   return poly([[0, 0.28], [0.62, 0.28], [0.62, 0], [1, 0.5], [0.62, 1], [0.62, 0.72], [0, 0.72]]);
+        case 'arrow-left':    return poly([[1, 0.28], [0.38, 0.28], [0.38, 0], [0, 0.5], [0.38, 1], [0.38, 0.72], [1, 0.72]]);
+        case 'arrow-up':      return poly([[0.28, 1], [0.28, 0.38], [0, 0.38], [0.5, 0], [1, 0.38], [0.72, 0.38], [0.72, 1]]);
+        case 'arrow-down':    return poly([[0.28, 0], [0.28, 0.62], [0, 0.62], [0.5, 1], [1, 0.62], [0.72, 0.62], [0.72, 0]]);
+        case 'arrow-both':    return poly([[0, 0.5], [0.22, 0.12], [0.22, 0.32], [0.78, 0.32], [0.78, 0.12], [1, 0.5], [0.78, 0.88], [0.78, 0.68], [0.22, 0.68], [0.22, 0.88]]);
+        case 'cross':         return poly([[0.34, 0], [0.66, 0], [0.66, 0.34], [1, 0.34], [1, 0.66], [0.66, 0.66], [0.66, 1], [0.34, 1], [0.34, 0.66], [0, 0.66], [0, 0.34], [0.34, 0.34]]);
+        case 'tag':           return poly([[0, 0], [0.78, 0], [1, 0.5], [0.78, 1], [0, 1]]);
+        case 'cylinder': {
+          const e = H * 0.14;
+          return `M 0 ${e} A ${W / 2} ${e} 0 0 1 ${W} ${e} L ${W} ${H - e} A ${W / 2} ${e} 0 0 1 0 ${H - e} Z`;
+        }
+        case 'speech': {
+          const bh = H * 0.78, rr = Math.min(W, bh) * 0.12;
+          return `M ${rr} 0 L ${W - rr} 0 A ${rr} ${rr} 0 0 1 ${W} ${rr} L ${W} ${bh - rr} A ${rr} ${rr} 0 0 1 ${W - rr} ${bh} L ${W * 0.34} ${bh} L ${W * 0.2} ${H} L ${W * 0.22} ${bh} L ${rr} ${bh} A ${rr} ${rr} 0 0 1 0 ${bh - rr} L 0 ${rr} A ${rr} ${rr} 0 0 1 ${rr} 0 Z`;
+        }
+        case 'ribbon':        return poly([[0, 0], [1, 0], [1, 1], [0.5, 0.78], [0, 1]]);
+        case 'bracket':       return `M ${W * 0.25} 0 L 0 0 L 0 ${H} L ${W * 0.25} ${H}`;
+        default:              return `M 0 0 L ${W} 0 L ${W} ${H} L 0 ${H} Z`;
+      }
+    }
+    /* Shapes drawn as an open stroke (no fill) — brackets, lines. */
+    const OPEN_SHAPES = new Set(['bracket']);
+
     const SHAPE_PRESETS = [
-      { key: 'rect',    label: 'Rectangle', icon: Square, w: 160, h: 120 },
-      { key: 'ellipse', label: 'Ellipse',   icon: Circle, w: 160, h: 120 },
+      { key: 'rect',          group: 'Basic',   label: 'Rectangle',    w: 160, h: 120 },
+      { key: 'rect-round',    group: 'Basic',   label: 'Rounded',      w: 160, h: 120, cornerRadius: 14 },
+      { key: 'ellipse',       group: 'Basic',   label: 'Ellipse',      w: 160, h: 120 },
+      { key: 'triangle',      group: 'Basic',   label: 'Triangle',     w: 150, h: 130 },
+      { key: 'triangle-down', group: 'Basic',   label: 'Triangle ▼',   w: 150, h: 130 },
+      { key: 'right-tri',     group: 'Basic',   label: 'Right tri.',   w: 150, h: 130 },
+      { key: 'diamond',       group: 'Basic',   label: 'Diamond',      w: 150, h: 150 },
+      { key: 'pentagon',      group: 'Polygon', label: 'Pentagon',     w: 150, h: 150 },
+      { key: 'hexagon',       group: 'Polygon', label: 'Hexagon',      w: 160, h: 140 },
+      { key: 'hexagon-v',     group: 'Polygon', label: 'Hexagon ▮',    w: 140, h: 160 },
+      { key: 'octagon',       group: 'Polygon', label: 'Octagon',      w: 150, h: 150 },
+      { key: 'star5',         group: 'Polygon', label: 'Star',         w: 150, h: 150 },
+      { key: 'star6',         group: 'Polygon', label: '6-point star', w: 150, h: 150 },
+      { key: 'burst',         group: 'Polygon', label: 'Burst',        w: 150, h: 150 },
+      { key: 'arrow-right',   group: 'Arrows',  label: 'Arrow →',      w: 180, h: 100 },
+      { key: 'arrow-left',    group: 'Arrows',  label: 'Arrow ←',      w: 180, h: 100 },
+      { key: 'arrow-up',      group: 'Arrows',  label: 'Arrow ↑',      w: 100, h: 180 },
+      { key: 'arrow-down',    group: 'Arrows',  label: 'Arrow ↓',      w: 100, h: 180 },
+      { key: 'arrow-both',    group: 'Arrows',  label: 'Arrow ↔',      w: 190, h: 110 },
+      { key: 'chevron',       group: 'Arrows',  label: 'Chevron',      w: 180, h: 100 },
+      { key: 'tag',           group: 'Flow',    label: 'Tag',          w: 180, h: 100 },
+      { key: 'parallelogram', group: 'Flow',    label: 'Parallelogram',w: 180, h: 110 },
+      { key: 'trapezoid',     group: 'Flow',    label: 'Trapezoid',    w: 180, h: 110 },
+      { key: 'cylinder',      group: 'Flow',    label: 'Cylinder',     w: 140, h: 170 },
+      { key: 'cross',         group: 'Flow',    label: 'Cross',        w: 140, h: 140 },
+      { key: 'speech',        group: 'Flow',    label: 'Speech',       w: 180, h: 140 },
+      { key: 'ribbon',        group: 'Flow',    label: 'Ribbon',       w: 170, h: 120 },
+      { key: 'bracket',       group: 'Flow',    label: 'Bracket',      w: 60,  h: 180 },
     ];
 
     const ARROW_VARIANTS = [
@@ -234,16 +377,531 @@
       return { x, y, w, h, guides };
     }
 
+    /* ============================================================================
+       SHADOWS
+       ========================================================================== */
+    const SHADOW_LEVELS = [
+      { key: 'none', label: 'None',   blur: 0,  dy: 0,   spread: 0,    alpha: 0    },
+      { key: 'sm',   label: 'Soft',   blur: 4,  dy: 1.5, spread: 0,    alpha: 0.18 },
+      { key: 'md',   label: 'Medium', blur: 10, dy: 4,   spread: 0,    alpha: 0.24 },
+      { key: 'lg',   label: 'Strong', blur: 20, dy: 8,   spread: 0,    alpha: 0.30 },
+    ];
+    const shadowByKey = Object.fromEntries(SHADOW_LEVELS.map(s => [s.key, s]));
+    /* Legacy docs stored shadow as a boolean. Map it onto the new scale. */
+    function normShadow(v) {
+      if (v === true || v === undefined || v === null) return 'sm';
+      if (v === false) return 'none';
+      return shadowByKey[v] ? v : 'sm';
+    }
+    function shadowCss(el) {
+      const lv = shadowByKey[normShadow(el.shadow)];
+      if (!lv || lv.key === 'none') return 'none';
+      const c = hexToRgba(el.shadowColor || '#0f172a', lv.alpha);
+      return `0 ${lv.dy}px ${lv.blur}px ${c}`;
+    }
+    function hexToRgba(hex, a) {
+      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '#0f172a');
+      if (!m) return `rgba(15,23,42,${a})`;
+      return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})`;
+    }
+
+    /* ============================================================================
+       RICH TEXT
+       ----------------------------------------------------------------------------
+       Text is stored as a small, deliberately restricted HTML subset so that word
+       and character level styling survives a round trip through both the DOM
+       editor and the SVG exporter:
+
+           <div>          paragraph
+           <div data-list="disc|dash|decimal|lower-alpha|upper-roman" data-lvl="0">
+                          list item, marker style carried on the node itself
+           <b> <i> <u> <s>            inline weight / posture / decoration
+           <span style="color:…;font-size:…px;font-family:…">   inline overrides
+
+       Anything else is stripped on paste. Both the canvas renderer and the export
+       serialiser walk the same tree, so what you see is what prints.
+       ========================================================================== */
+
+    const LIST_STYLES = [
+      { key: 'disc',        label: 'Bullet',  marker: (i) => '•' },
+      { key: 'dash',        label: 'Dash',    marker: (i) => '–' },
+      { key: 'circle',      label: 'Circle',  marker: (i) => '◦' },
+      { key: 'square',      label: 'Square',  marker: (i) => '▪' },
+      { key: 'decimal',     label: '1. 2. 3.', marker: (i) => `${i + 1}.` },
+      { key: 'paren',       label: '1) 2) 3)', marker: (i) => `${i + 1})` },
+      { key: 'lower-alpha', label: 'a. b. c.', marker: (i) => `${String.fromCharCode(97 + (i % 26))}.` },
+      { key: 'upper-roman', label: 'I. II.',   marker: (i) => romanise(i + 1) + '.' },
+    ];
+    const listByKey = Object.fromEntries(LIST_STYLES.map(l => [l.key, l]));
+    const ORDERED_LISTS = new Set(['decimal', 'paren', 'lower-alpha', 'upper-roman']);
+
+    function romanise(n) {
+      const map = [[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']];
+      let out = '';
+      for (const [v, sym] of map) while (n >= v) { out += sym; n -= v; }
+      return out;
+    }
+
+    /* ---- Text measurement ----------------------------------------------------
+       A single offscreen 2D context gives real font metrics. Both the on-canvas
+       preview and the exporter wrap against these numbers, which is what keeps
+       exported line breaks identical to the ones on screen. Results are memoised
+       because wrapping calls this once per word per re-render.                  */
+    let _measureCtx = null;
+    const _measureCache = new Map();
+    function measureText(str, f) {
+      if (!str) return 0;
+      const key = `${f.size}|${f.weight}|${f.italic ? 1 : 0}|${f.family}|${str}`;
+      const hit = _measureCache.get(key);
+      if (hit !== undefined) return hit;
+      if (!_measureCtx) {
+        try { _measureCtx = document.createElement('canvas').getContext('2d'); }
+        catch (err) { _measureCtx = null; }
+      }
+      let w;
+      if (_measureCtx) {
+        _measureCtx.font = `${f.italic ? 'italic ' : ''}${f.weight || 400} ${f.size}px ${f.family || 'sans-serif'}`;
+        w = _measureCtx.measureText(str).width;
+      } else {
+        w = str.length * f.size * 0.5;
+      }
+      if (_measureCache.size > 20000) _measureCache.clear();
+      _measureCache.set(key, w);
+      return w;
+    }
+
+    /* ---- HTML -> blocks ------------------------------------------------------
+       Produces [{ list, listIndex, runs:[{text, bold, italic, underline, strike,
+       color, size, family}] }]. `size` is a multiplier of the element font size
+       so that rescaling the poster keeps inline overrides proportional.         */
+    function htmlToBlocks(html, baseStyle) {
+      const blocks = [];
+      let doc;
+      try {
+        doc = new DOMParser().parseFromString(`<div id="r">${html || ''}</div>`, 'text/html');
+      } catch (err) { doc = null; }
+      const root = doc && doc.getElementById('r');
+      if (!root) return [{ list: null, runs: [{ text: String(html || ''), ...baseStyle }] }];
+
+      let current = null;
+      const startBlock = (list) => { current = { list: list || null, runs: [] }; blocks.push(current); return current; };
+
+      const walk = (node, inherited) => {
+        for (const child of node.childNodes) {
+          if (child.nodeType === 3) {
+            const text = child.nodeValue.replace(/\u00a0/g, ' ');
+            if (!text) continue;
+            if (!current) startBlock(null);
+            current.runs.push({ ...inherited, text });
+            continue;
+          }
+          if (child.nodeType !== 1) continue;
+          const tag = child.tagName.toLowerCase();
+
+          if (tag === 'br') { if (!current) startBlock(null); startBlock(current ? current.list : null); continue; }
+
+          if (tag === 'div' || tag === 'p' || tag === 'li') {
+            const list = child.getAttribute && child.getAttribute('data-list');
+            startBlock(list);
+            walk(child, inherited);
+            current = null;
+            continue;
+          }
+          if (tag === 'ul' || tag === 'ol') { walk(child, inherited); continue; }
+
+          const next = { ...inherited };
+          if (tag === 'b' || tag === 'strong') next.bold = true;
+          if (tag === 'i' || tag === 'em') next.italic = true;
+          if (tag === 'u') next.underline = true;
+          if (tag === 's' || tag === 'strike' || tag === 'del') next.strike = true;
+          const st = child.style || {};
+          if (st.fontWeight === 'bold' || +st.fontWeight >= 600) next.bold = true;
+          if (st.fontStyle === 'italic') next.italic = true;
+          if (st.textDecorationLine === 'underline' || st.textDecoration === 'underline') next.underline = true;
+          if (st.color) next.color = st.color;
+          if (st.fontFamily) next.family = st.fontFamily.replace(/^["']|["']$/g, '');
+          if (st.fontSize && st.fontSize.endsWith('px')) next.sizeAbs = parseFloat(st.fontSize);
+          walk(child, next);
+        }
+      };
+      walk(root, baseStyle);
+
+      // Number list items per contiguous run of the same marker style.
+      let counter = 0, prev = null;
+      for (const b of blocks) {
+        if (b.list && ORDERED_LISTS.has(b.list)) { counter = (prev === b.list ? counter + 1 : 0); b.listIndex = counter; }
+        else b.listIndex = 0;
+        prev = b.list;
+      }
+      return blocks.length ? blocks : [{ list: null, runs: [] }];
+    }
+
+    /* Plain string -> the same block shape, so legacy elements keep working. */
+    function plainToBlocks(text, baseStyle) {
+      return String(text ?? '').split('\n').map((ln) => ({ list: null, listIndex: 0, runs: ln ? [{ ...baseStyle, text: ln }] : [] }));
+    }
+    function elBlocks(el, baseStyle) {
+      return el.html != null ? htmlToBlocks(el.html, baseStyle) : plainToBlocks(el.text, baseStyle);
+    }
+    function blocksToPlain(blocks) {
+      return blocks.map(b => b.runs.map(r => r.text).join('')).join('\n');
+    }
+
+    /* ---- Wrapping ------------------------------------------------------------
+       Greedy wrap over styled runs. Each run is split into words; a word is
+       measured with its own font, so a bold word inside a light paragraph
+       contributes its true advance width rather than an average.
+
+           lineWidth = Σ measure(wordᵢ, styleᵢ)  ≤  maxWidth
+
+       Returns [[{text, style…}]] — one array of runs per visual line.          */
+    function wrapRuns(runs, maxWidth) {
+      const lines = [];
+      let line = [], lineW = 0;
+      const push = () => { lines.push(line); line = []; lineW = 0; };
+
+      for (const run of runs) {
+        if (!run.text) continue;
+        const f = { size: run.sizeAbs || run.size, weight: run.bold ? 700 : 400, italic: run.italic, family: run.family };
+        const parts = run.text.split(/(\s+)/);
+        for (const part of parts) {
+          if (!part) continue;
+          const w = measureText(part, f);
+          const isSpace = /^\s+$/.test(part);
+          if (!isSpace && lineW + w > maxWidth && lineW > 0) push();
+          if (isSpace && lineW === 0) continue;              // swallow leading space after a break
+          const last = line[line.length - 1];
+          if (last && last.__k === runKey(run)) { last.text += part; }
+          else line.push({ ...run, text: part, __k: runKey(run) });
+          lineW += w;
+        }
+      }
+      push();
+      return lines;
+    }
+    function runKey(r) { return `${r.bold?1:0}${r.italic?1:0}${r.underline?1:0}${r.strike?1:0}|${r.color}|${r.sizeAbs || r.size}|${r.family}`; }
+    function lineWidth(lineRuns) {
+      return lineRuns.reduce((acc, r) => acc + measureText(r.text, { size: r.sizeAbs || r.size, weight: r.bold ? 700 : 400, italic: r.italic, family: r.family }), 0);
+    }
+
+    /* ---- Sanitiser -----------------------------------------------------------
+       Runs on paste and before every commit. Keeps the tag subset above, drops
+       everything else (scripts, images, class names, stray attributes).        */
+    const ALLOWED_TAGS = new Set(['DIV','BR','B','STRONG','I','EM','U','S','STRIKE','DEL','SPAN','P','LI','UL','OL','FONT']);
+    function sanitiseRichHtml(html) {
+      let doc;
+      try { doc = new DOMParser().parseFromString(`<div id="r">${html || ''}</div>`, 'text/html'); }
+      catch (err) { return esc(String(html || '')); }
+      const root = doc.getElementById('r');
+      if (!root) return '';
+      const scrub = (node) => {
+        for (const child of [...node.childNodes]) {
+          if (child.nodeType === 8) { child.remove(); continue; }
+          if (child.nodeType !== 1) continue;
+          // Script/style are removed with their contents, not unwrapped.
+          if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || child.tagName === 'IFRAME') { child.remove(); continue; }
+          if (!ALLOWED_TAGS.has(child.tagName)) {
+            while (child.firstChild) node.insertBefore(child.firstChild, child);
+            child.remove();
+            continue;
+          }
+          const keepList = child.getAttribute('data-list');
+          const keepStyle = child.style ? {
+            color: child.style.color,
+            fontSize: child.style.fontSize,
+            fontFamily: child.style.fontFamily,
+            fontWeight: child.style.fontWeight,
+            fontStyle: child.style.fontStyle,
+            textDecoration: child.style.textDecorationLine || child.style.textDecoration,
+          } : null;
+          for (const a of [...child.attributes]) child.removeAttribute(a.name);
+          if (keepList) child.setAttribute('data-list', keepList);
+          if (keepStyle) {
+            const parts = [];
+            if (keepStyle.color) parts.push(`color:${keepStyle.color}`);
+            if (keepStyle.fontSize) parts.push(`font-size:${keepStyle.fontSize}`);
+            if (keepStyle.fontFamily) parts.push(`font-family:${keepStyle.fontFamily}`);
+            if (keepStyle.fontWeight) parts.push(`font-weight:${keepStyle.fontWeight}`);
+            if (keepStyle.fontStyle) parts.push(`font-style:${keepStyle.fontStyle}`);
+            if (keepStyle.textDecoration) parts.push(`text-decoration:${keepStyle.textDecoration}`);
+            if (parts.length) child.setAttribute('style', parts.join(';'));
+          }
+          scrub(child);
+        }
+      };
+      scrub(root);
+      return root.innerHTML;
+    }
+    function plainToHtml(text) {
+      return String(text ?? '').split('\n').map(l => `<div>${esc(l) || '<br>'}</div>`).join('');
+    }
+
+    /* ---- Auto-list detection -------------------------------------------------
+       Typing "1." / "1)" / "-" / "*" / "a." / "i." then SPACE converts just the
+       current line into a list item. Everything above and below it is untouched,
+       so a section can hold prose and a list at the same time.                 */
+    const AUTOLIST_PATTERNS = [
+      { re: /^\s*[-–—]$/,             list: 'dash'        },
+      { re: /^\s*[*•]$/,              list: 'disc'        },
+      { re: /^\s*\d{1,3}\.$/,         list: 'decimal'     },
+      { re: /^\s*\d{1,3}\)$/,         list: 'paren'       },
+      { re: /^\s*[a-z]\.$/,           list: 'lower-alpha' },
+      { re: /^\s*[ivxIVX]{1,5}\.$/,   list: 'upper-roman' },
+    ];
+
+    function currentBlock(root) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return null;
+      let n = sel.getRangeAt(0).startContainer;
+      if (n === root) {
+        const kids = root.childNodes;
+        n = kids[Math.min(sel.getRangeAt(0).startOffset, kids.length - 1)] || root;
+      }
+      while (n && n.parentNode !== root) { if (!n.parentNode) return null; n = n.parentNode; }
+      return n && n.nodeType === 1 ? n : null;
+    }
+
+    function RichTextEditor({ el, html, style, listStyleDefault, onCommit, onEndEdit, autoFocus = true }) {
+      const ref = useRef(null);
+
+      useEffect(() => {
+        const node = ref.current;
+        if (!node) return;
+        node.innerHTML = html || '<div><br></div>';
+        if (autoFocus) {
+          node.focus();
+          // Caret to the end rather than the start — matches every other editor.
+          const r = document.createRange();
+          r.selectNodeContents(node); r.collapse(false);
+          const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        }
+        try { document.execCommand('styleWithCSS', false, true); } catch (err) {}
+      }, []);
+
+      const commit = () => {
+        const node = ref.current;
+        if (!node) return;
+        onCommit(sanitiseRichHtml(node.innerHTML));
+      };
+
+      const onKeyDown = (e) => {
+        const node = ref.current;
+        if (!node) return;
+        e.stopPropagation();          // keep canvas shortcuts (delete, ctrl+z) out of the editor
+
+        if (e.key === 'Escape') { e.preventDefault(); commit(); onEndEdit(); return; }
+
+        if (e.key === ' ') {
+          const blk = currentBlock(node);
+          if (blk && !blk.getAttribute('data-list')) {
+            const txt = blk.textContent || '';
+            const sel = window.getSelection();
+            const atEnd = sel && sel.isCollapsed && sel.anchorOffset === (sel.anchorNode?.nodeValue?.length ?? -1);
+            const hit = AUTOLIST_PATTERNS.find(p => p.re.test(txt));
+            if (hit && atEnd !== false) {
+              e.preventDefault();
+              blk.setAttribute('data-list', hit.list);
+              blk.textContent = '';
+              blk.appendChild(document.createElement('br'));
+              const r = document.createRange();
+              r.setStart(blk, 0); r.collapse(true);
+              const s2 = window.getSelection(); s2.removeAllRanges(); s2.addRange(r);
+              return;
+            }
+          }
+        }
+
+        if (e.key === 'Enter' && !e.shiftKey) {
+          const blk = currentBlock(node);
+          const list = blk && blk.getAttribute('data-list');
+          if (list) {
+            const empty = !(blk.textContent || '').trim();
+            e.preventDefault();
+            if (empty) {
+              // Second Enter on an empty item leaves the list, as expected.
+              blk.removeAttribute('data-list');
+              return;
+            }
+            const nb = document.createElement('div');
+            nb.setAttribute('data-list', list);
+            nb.appendChild(document.createElement('br'));
+            blk.parentNode.insertBefore(nb, blk.nextSibling);
+            const r = document.createRange();
+            r.setStart(nb, 0); r.collapse(true);
+            const s2 = window.getSelection(); s2.removeAllRanges(); s2.addRange(r);
+            return;
+          }
+        }
+
+        if (e.key === 'Backspace') {
+          const blk = currentBlock(node);
+          const sel = window.getSelection();
+          if (blk && blk.getAttribute('data-list') && sel?.isCollapsed && (sel.anchorOffset === 0)) {
+            e.preventDefault();
+            blk.removeAttribute('data-list');   // Backspace at item start unwraps it
+          }
+        }
+      };
+
+      const onPaste = (e) => {
+        e.preventDefault();
+        const cd = e.clipboardData;
+        const html = cd?.getData('text/html');
+        const text = cd?.getData('text/plain') || '';
+        const payload = html ? sanitiseRichHtml(html) : plainToHtml(text);
+        try { document.execCommand('insertHTML', false, payload); }
+        catch (err) { document.execCommand('insertText', false, text); }
+      };
+
+      return (
+        <div ref={ref} contentEditable suppressContentEditableWarning
+             data-rich-editor="1"
+             onPointerDown={(e) => e.stopPropagation()}
+             onDoubleClick={(e) => e.stopPropagation()}
+             onKeyDown={onKeyDown}
+             onPaste={onPaste}
+             onBlur={(e) => {
+               // Clicking the format toolbar must not end the edit session.
+               if (e.relatedTarget && e.relatedTarget.closest?.('[data-format-toolbar]')) return;
+               commit(); onEndEdit();
+             }}
+             className="rich-editor"
+             style={{ ...style, whiteSpace: 'pre-wrap', outline: 'none', cursor: 'text' }} />
+      );
+    }
+
+    /* ---- Read-only rich rendering -------------------------------------------
+       Blocks are rendered explicitly rather than via dangerouslySetInnerHTML so
+       list markers, indents and alignment match the exporter exactly.          */
+    function RichTextRender({ el, baseStyle, style }) {
+      const blocks = elBlocks(el, baseStyle);
+      const markerGap = baseStyle.size * 0.45;
+      return (
+        <div style={style}>
+          {blocks.map((b, i) => {
+            const runs = b.runs.length ? b.runs : [{ ...baseStyle, text: '' }];
+            const content = runs.map((r, j) => (
+              <span key={j} style={{
+                fontWeight: r.bold ? 700 : 400,
+                fontStyle: r.italic ? 'italic' : 'normal',
+                textDecoration: [r.underline ? 'underline' : '', r.strike ? 'line-through' : ''].filter(Boolean).join(' ') || 'none',
+                color: r.color, fontFamily: r.family,
+                fontSize: (r.sizeAbs || r.size) + 'px',
+              }}>{r.text || '\u200b'}</span>
+            ));
+            if (!b.list) return <div key={i} style={{ minHeight: '1em' }}>{content}</div>;
+            const lst = listByKey[b.list] || listByKey.disc;
+            return (
+              <div key={i} style={{ display: 'flex', gap: markerGap, alignItems: 'baseline' }}>
+                <span style={{ flexShrink: 0, minWidth: baseStyle.size * (ORDERED_LISTS.has(b.list) ? 1.5 : 0.9), color: el.accent || baseStyle.color, fontWeight: 600 }}>
+                  {lst.marker(b.listIndex || 0)}
+                </span>
+                <span style={{ flex: 1 }}>{content}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    /* ---- Floating format toolbar --------------------------------------------
+       Docked to the top of the workspace rather than tracking the caret: the
+       poster can be zoomed, panned and rotated, and a docked bar stays reachable
+       and unclipped in every one of those states. Buttons suppress mousedown so
+       the text selection they are about to act on survives the click.          */
+    function FormatToolbar({ t, el, onPatch, onListStyle }) {
+      const cmd = (name, value) => {
+        try { document.execCommand('styleWithCSS', false, true); document.execCommand(name, false, value); } catch (err) {}
+      };
+      const noBlur = (e) => e.preventDefault();
+      const Btn = ({ onClick, title, children, style }) => (
+        <button data-format-toolbar onMouseDown={noBlur} onClick={onClick} title={title}
+          className={`h-8 min-w-8 px-2 rounded-md border text-xs grid place-items-center ${t.chip} ${t.hover}`} style={style}>{children}</button>
+      );
+      const sizes = [0.75, 0.9, 1, 1.25, 1.5, 2];
+      const baseFs = el.fontSize || 14;
+
+      return (
+        <div data-format-toolbar onMouseDown={noBlur}
+          className={`absolute top-2 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 px-2 py-1.5 rounded-xl border shadow-2xl ${t.panel}`}>
+          <Btn title="Bold (Ctrl+B)" onClick={() => cmd('bold')} style={{ fontWeight: 800 }}>B</Btn>
+          <Btn title="Italic (Ctrl+I)" onClick={() => cmd('italic')} style={{ fontStyle: 'italic' }}>I</Btn>
+          <Btn title="Underline (Ctrl+U)" onClick={() => cmd('underline')} style={{ textDecoration: 'underline' }}>U</Btn>
+          <Btn title="Strikethrough" onClick={() => cmd('strikeThrough')} style={{ textDecoration: 'line-through' }}>S</Btn>
+
+          <div className="w-px h-6 bg-current opacity-15 mx-0.5" />
+
+          <label data-format-toolbar onMouseDown={noBlur} title="Text colour"
+                 className={`h-8 w-8 grid place-items-center rounded-md border cursor-pointer ${t.chip}`}>
+            <input type="color" defaultValue={el.color || '#111827'} onMouseDown={noBlur}
+                   onChange={(e) => cmd('foreColor', e.target.value)}
+                   className="w-5 h-5 border-0 bg-transparent cursor-pointer p-0" />
+          </label>
+
+          <select data-format-toolbar onMouseDown={(e) => e.stopPropagation()}
+                  defaultValue=""
+                  onChange={(e) => { const v = e.target.value; if (v) cmd('fontName', v); e.target.value = ''; }}
+                  className={`h-8 px-1 rounded-md border text-xs ${t.input}`} title="Font for selection">
+            <option value="">Font…</option>
+            {FONTS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+
+          <select data-format-toolbar onMouseDown={(e) => e.stopPropagation()}
+                  defaultValue=""
+                  onChange={(e) => {
+                    const mult = +e.target.value;
+                    if (mult) {
+                      // execCommand fontSize only accepts 1-7, so apply a real px
+                      // value by wrapping the selection ourselves.
+                      cmd('fontSize', 4);
+                      const px = Math.round(baseFs * mult);
+                      const scope = document.querySelector('[data-rich-editor="1"]') || document;
+                      scope.querySelectorAll('font[size="4"]').forEach((f) => {
+                        const sp = document.createElement('span');
+                        sp.style.fontSize = px + 'px';
+                        while (f.firstChild) sp.appendChild(f.firstChild);
+                        f.replaceWith(sp);
+                      });
+                    }
+                    e.target.value = '';
+                  }}
+                  className={`h-8 px-1 rounded-md border text-xs ${t.input}`} title="Size for selection">
+            <option value="">Size…</option>
+            {sizes.map(m => <option key={m} value={m}>{Math.round(baseFs * m)} pt</option>)}
+          </select>
+
+          <div className="w-px h-6 bg-current opacity-15 mx-0.5" />
+
+          <select data-format-toolbar onMouseDown={(e) => e.stopPropagation()}
+                  defaultValue=""
+                  onChange={(e) => { if (e.target.value) onListStyle(e.target.value); e.target.value = ''; }}
+                  className={`h-8 px-1 rounded-md border text-xs ${t.input}`} title="Turn the current line into a list">
+            <option value="">List…</option>
+            {LIST_STYLES.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+            <option value="__none">Remove list</option>
+          </select>
+
+          <span className={`text-[10px] px-1 ${t.sub}`}>Esc to finish</span>
+        </div>
+      );
+    }
+
     /* ----------------------------- Components --------------------------------- */
     function FlyoutTool({ icon: Icon, label, theme: t, active, open, onEnter, onLeave, children }) {
+      /* The panel is positioned flush against the rail (left-full, no margin) and
+         carries its own padding-left, so the pointer never crosses a dead gap on
+         its way from the button into the menu — that gap was what made the menu
+         vanish mid-reach. Width is intrinsic so children can never overflow.   */
       return (
         <div className="relative" onMouseEnter={onEnter} onMouseLeave={onLeave}>
           <button title={label} className={`h-11 w-11 grid place-items-center rounded-xl transition-colors ${active || open ? 'bg-cyan-500/10 text-cyan-400' : t.hover}`}>
             <Icon size={19} />
           </button>
           {open && (
-            <div className={`absolute left-full top-0 ml-1 w-52 p-2 rounded-xl border shadow-xl z-50 ${t.panel}`}>
-              {children}
+            <div className="absolute left-full top-0 pl-1 z-50" onMouseEnter={onEnter} onMouseLeave={onLeave}>
+              <div className={`w-max max-w-[19rem] p-2 rounded-xl border shadow-xl ${t.panel}`}>
+                {children}
+              </div>
             </div>
           )}
         </div>
@@ -291,7 +949,7 @@
     /* ============================================================================
        MAIN COMPONENT
        ========================================================================== */
-    function SciPosterStudio() {
+    function PosterettoStudio() {
       const [dark, setDark] = useState(true);
       const [sizeKey, setSizeKey] = useState('A0');
       const [customSize, setCustomSize] = useState({ w: 700, h: 1000 });
@@ -303,6 +961,9 @@
       const [elements, setElements] = useState([]);
       const [selectedIds, setSelectedIds] = useState(new Set());
       const [editingId, setEditingId] = useState(null);
+      const [editTarget, setEditTarget] = useState('body');   // 'body' | 'title'
+      const figureTargetRef = useRef(null);
+      const figureInputRef = useRef(null);
       const [tool, setTool] = useState('select');      
       const [pendingVariant, setPendingVariant] = useState('arrow');
       const [snapOn, setSnapOn] = useState(true);
@@ -315,6 +976,79 @@
       const [exportState, setExportState] = useState(null);
       
       const [isPanning, setIsPanning] = useState(false);
+      const [rotSnap, setRotSnap] = useState(null);      // live rotation-detent readout
+      const [showGrid, setShowGrid] = useState(false);
+      const [gridMm, setGridMm] = useState(10);
+      const [freeArrows, setFreeArrows] = useState(false); // when true, connectors never stitch
+      const [saveHint, setSaveHint] = useState('');
+      const restoredRef = useRef(false);
+      const projectInputRef = useRef(null);
+
+      /* ------- Autosave / restore (localStorage) ------- */
+      useEffect(() => {
+        try {
+          const raw = window.localStorage.getItem('posteretto:autosave');
+          if (raw) {
+            const doc = JSON.parse(raw);
+            if (Array.isArray(doc.elements)) {
+              setElements(doc.elements);
+              if (doc.sizeKey) setSizeKey(doc.sizeKey);
+              if (doc.customSize) setCustomSize(doc.customSize);
+              setSaveHint('Restored your last session');
+              setTimeout(() => setSaveHint(''), 2600);
+            }
+          }
+        } catch (err) { console.warn('Restore failed', err); }
+        restoredRef.current = true;
+      }, []);
+
+      useEffect(() => {
+        if (!restoredRef.current) return;
+        const id = setTimeout(() => {
+          try {
+            window.localStorage.setItem('posteretto:autosave', JSON.stringify({ v: 1, elements, sizeKey, customSize }));
+          } catch (err) {
+            // quota exceeded (usually large embedded images) - fail quietly
+          }
+        }, 700);
+        return () => clearTimeout(id);
+      }, [elements, sizeKey, customSize]);
+
+      const saveProject = useCallback(() => {
+        const doc = { app: 'Posteretto', v: 1, savedAt: new Date().toISOString(), sizeKey, customSize, elements };
+        const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'posteretto-project.json';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setSaveHint('Project file saved');
+        setTimeout(() => setSaveHint(''), 2200);
+      }, [elements, sizeKey, customSize]);
+
+      const openProject = useCallback((file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const doc = JSON.parse(reader.result);
+            if (!Array.isArray(doc.elements)) throw new Error('Not a Posteretto project');
+            history.current.past.push(elements);
+            history.current.future = [];
+            setElements(doc.elements);
+            if (doc.sizeKey) setSizeKey(doc.sizeKey);
+            if (doc.customSize) setCustomSize(doc.customSize);
+            setSelectedIds(new Set());
+            setSaveHint('Project loaded');
+            setTimeout(() => setSaveHint(''), 2200);
+          } catch (err) {
+            setSaveHint("That file could not be read as a Posteretto project");
+            setTimeout(() => setSaveHint(''), 3200);
+          }
+        };
+        reader.readAsText(file);
+      }, [elements]);
+
 
       const viewportRef = useRef(null);
       const surfaceRef = useRef(null);
@@ -362,32 +1096,53 @@
       const selected = selectedIds.size === 1 ? elements.find((e) => selectedIds.has(e.id)) || null : null;
 
       /* ------- Canvas Rescaling Engine ------- */
+      /* Inline runs carry absolute px sizes, so a poster resize has to walk the
+         stored HTML and scale them too — otherwise a word styled at 22pt keeps
+         that size while everything around it shrinks. */
+      const scaleHtmlSizes = (html, k) => {
+        if (!html) return html;
+        return String(html).replace(/font-size:\s*([\d.]+)px/g, (m, v) => `font-size:${(parseFloat(v) * k).toFixed(2)}px`);
+      };
+
       const applyCanvasSizeChange = useCallback((newW, newH) => {
         const scale = Math.min(newW / poster.w, newH / poster.h);
-        if (scale === 1) return;
-        
+        if (!isFinite(scale) || scale === 1) return;
+
+        // Re-centre the whole composition in the new sheet so a change of aspect
+        // ratio doesn't push everything against the top-left corner.
+        const offX = (newW - poster.w * scale) / 2;
+        const offY = (newH - poster.h * scale) / 2;
+        const SX = (v) => v * scale + offX;
+        const SY = (v) => v * scale + offY;
+
         commit(elements);
         setElements(prev => prev.map(el => {
           let newEl = { ...el };
-          newEl.x *= scale;
-          newEl.y *= scale;
+          if (newEl.x !== undefined) newEl.x = SX(newEl.x);
+          if (newEl.y !== undefined) newEl.y = SY(newEl.y);
           if (newEl.w) newEl.w *= scale;
           if (newEl.h) newEl.h *= scale;
-          if (newEl.fontSize) newEl.fontSize = Math.max(6, newEl.fontSize * scale);
-          if (newEl.strokeWidth) newEl.strokeWidth = Math.max(1, newEl.strokeWidth * scale);
-          
+          // Everything measured in mm scales with the sheet.
+          ['fontSize', 'strokeWidth', 'radius', 'padding', 'cornerRadius', 'borderW'].forEach((k) => {
+            if (typeof newEl[k] === 'number' && newEl[k] > 0) newEl[k] = Math.max(k === 'fontSize' ? 2 : 0, newEl[k] * scale);
+          });
+          // Inline runs carry absolute px sizes; scale those too.
+          if (newEl.html) newEl.html = scaleHtmlSizes(newEl.html, scale);
+          if (newEl.titleHtml) newEl.titleHtml = scaleHtmlSizes(newEl.titleHtml, scale);
+
           if (newEl.type === 'path') {
-            newEl.points = newEl.points.map(p => ({ x: p.x * scale, y: p.y * scale }));
+            newEl.points = newEl.points.map(p => ({ x: SX(p.x), y: SY(p.y) }));
           }
           if (newEl.type === 'image') {
-            if (newEl.imgX !== undefined) newEl.imgX *= scale;
-            if (newEl.imgY !== undefined) newEl.imgY *= scale;
+            if (newEl.imgX !== undefined) newEl.imgX = SX(newEl.imgX);
+            if (newEl.imgY !== undefined) newEl.imgY = SY(newEl.imgY);
             if (newEl.imgW !== undefined) newEl.imgW *= scale;
             if (newEl.imgH !== undefined) newEl.imgH *= scale;
           }
           if (newEl.type === 'connector') {
-            if (newEl.start.elId == null) { newEl.start.x *= scale; newEl.start.y *= scale; }
-            if (newEl.end.elId == null) { newEl.end.x *= scale; newEl.end.y *= scale; }
+            newEl.start = { ...newEl.start }; newEl.end = { ...newEl.end };
+            if (newEl.start.elId == null) { newEl.start.x = SX(newEl.start.x); newEl.start.y = SY(newEl.start.y); }
+            if (newEl.end.elId == null)   { newEl.end.x   = SX(newEl.end.x);   newEl.end.y   = SY(newEl.end.y); }
           }
           return newEl;
         }));
@@ -425,7 +1180,9 @@
       /* ------- Global Shortcuts ------- */
       useEffect(() => {
         const onKey = (e) => {
+          if (e.key === 'Escape' && editingId) { setEditingId(null); setEditTarget('body'); return; }
           if (editingId || showCanvasModal) return;
+          if (document.activeElement?.closest?.('[data-rich-editor="1"]')) return;
           if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
 
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
@@ -471,11 +1228,14 @@
       const addElement = useCallback((el) => {
         commit(elements);
         const id = uid();
-        const x = round(poster.w / 2 - (el.w || 100) / 2), y = round(poster.h / 2 - (el.h || 100) / 2);
-        
-        let finalEl = { id, x, y, rot: 0, fontFamily: FONTS[0].value, square: false, ...el };
-        if (el.type === 'image') {
-          finalEl.imgX = x; finalEl.imgY = y; finalEl.imgW = el.w; finalEl.imgH = el.h;
+        const { at, ...def } = el;
+        const w = def.w || 100, h = def.h || 100;
+        const x = round(at ? at.x : clamp(poster.w / 2 - w / 2, 0, Math.max(0, poster.w - w)));
+        const y = round(at ? at.y : clamp(poster.h / 2 - h / 2, 0, Math.max(0, poster.h - h)));
+
+        let finalEl = { id, x, y, rot: 0, opacity: 1, locked: false, fontFamily: FONTS[0].value, square: false, ...def };
+        if (def.type === 'image') {
+          finalEl.imgX = x; finalEl.imgY = y; finalEl.imgW = def.w; finalEl.imgH = def.h;
         }
 
         setElements((p) => [...p, finalEl]);
@@ -483,23 +1243,84 @@
         return id;
       }, [poster, elements, commit]);
 
-      const addText = () => addElement({ type: 'text', w: 240, h: 90, text: 'New text — double-click to edit', fontSize: 20, color: '#0f172a', bold: false, align: 'left', lineHeight: 1.3 });
-      const addSection = (preset) => addElement({ type: 'section', w: preset.w, h: preset.h, title: preset.label, text: LOREM, fill: preset.fill, accent: preset.accent, fontSize: 14, color: '#334155', align: 'left', lineHeight: 1.4 });
-      const addCustomSection = () => addElement({ type: 'section', w: 260, h: 200, title: 'Custom Section', text: LOREM, fill: '#f1f5f9', accent: '#6366f1', fontSize: 14, color: '#334155', align: 'left', lineHeight: 1.4, custom: true });
-      const addShape = (preset) => addElement({ type: 'shape', shape: preset.key, w: preset.w, h: preset.h, stroke: '#0e7490', fill: '#cffafe', strokeWidth: 4 });
+      /* ------- Proportional instantiation -------------------------------------
+         Presets are authored at A0 width (BASE_W). posterScale maps them onto
+         whatever canvas is active, so geometry AND typography stay in the same
+         visual proportion on a 300 mm handout as on a 1189 mm A0 sheet.      */
+      const posterScale = poster.w / BASE_W;
+      const S = useCallback((v) => Math.max(1, Math.round(v * posterScale * 100) / 100), [posterScale]);
 
-      const onUpload = (e) => {
-        const file = e.target.files?.[0]; if (!file) return;
+      const addText = () => addElement({ type: 'text', w: S(240), h: S(90), text: 'New text — double-click to edit',
+        fontSize: S(20), color: '#0f172a', bold: false, align: 'left', lineHeight: 1.3 });
+
+      const addSection = (preset) => addElement({
+        type: 'section', sectionKind: preset.kind || 'plain',
+        w: S(preset.w), h: S(preset.h),
+        title: preset.title ?? preset.label,
+        text: preset.text ?? LOREM,
+        rows: preset.rows ? preset.rows.map((r) => [...r]) : undefined,
+        fill: preset.fill, accent: preset.accent,
+        headerStyle: preset.headerStyle || 'bar',
+        fontSize: S(preset.fontSize || 14),
+        color: preset.color || '#334155',
+        align: 'left', lineHeight: 1.4,
+        radius: S(6), borderW: 0, borderColor: preset.accent, padding: S(10),
+      });
+
+      const addCustomSection = () => addElement({ type: 'section', sectionKind: 'plain', w: S(260), h: S(200),
+        title: 'Custom Section', text: LOREM, fill: '#f1f5f9', accent: '#6366f1', headerStyle: 'bar',
+        fontSize: S(14), color: '#334155', align: 'left', lineHeight: 1.4,
+        radius: S(6), borderW: 0, borderColor: '#6366f1', padding: S(10), custom: true });
+
+      const addShape = (preset) => addElement({
+        type: 'shape',
+        shape: preset.key === 'rect-round' ? 'rect' : preset.key,
+        w: S(preset.w), h: S(preset.h),
+        stroke: '#0e7490', fill: OPEN_SHAPES.has(preset.key) ? 'none' : '#cffafe',
+        strokeWidth: S(4),
+        cornerRadius: S(preset.cornerRadius || 0),
+        dashed: false,
+      });
+
+      /* Place an image at an explicit poster point (used by drag-and-drop). */
+      const addImageFile = useCallback((file, at) => {
+        if (!file || !file.type?.startsWith('image/')) return;
         const reader = new FileReader();
         reader.onload = () => {
           const img = new Image();
           img.onload = () => {
-            const maxW = 320, ratio = img.height / img.width;
-            addElement({ type: 'image', w: maxW, h: round(maxW * ratio), src: reader.result });
+            const maxW = Math.min(S(320), poster.w * 0.5);
+            const w = maxW, h = round(maxW * (img.height / img.width));
+            addElement({ type: 'image', w, h, src: reader.result,
+              ...(at ? { at: { x: clamp(at.x - w / 2, 0, poster.w - w), y: clamp(at.y - h / 2, 0, poster.h - h) } } : {}) });
           };
           img.src = reader.result;
         };
-        reader.readAsDataURL(file); e.target.value = '';
+        reader.readAsDataURL(file);
+      }, [addElement, poster, S]);
+
+      const onUpload = (e) => {
+        Array.from(e.target.files || []).forEach((f) => addImageFile(f));
+        e.target.value = '';
+      };
+
+      /* ------- Drag & drop import ------- */
+      const [dropActive, setDropActive] = useState(false);
+      const onCanvasDragOver = (e) => {
+        if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+        e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+        if (!dropActive) setDropActive(true);
+      };
+      const onCanvasDragLeave = (e) => {
+        if (e.currentTarget.contains(e.relatedTarget)) return;
+        setDropActive(false);
+      };
+      const onCanvasDrop = (e) => {
+        const files = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/'));
+        if (!files.length) { setDropActive(false); return; }
+        e.preventDefault(); setDropActive(false);
+        const p = toPoster(e.clientX, e.clientY);
+        files.forEach((f, i) => addImageFile(f, { x: p.x + i * S(18), y: p.y + i * S(18) }));
       };
 
       const patchSelected = (patch) => {
@@ -538,25 +1359,96 @@
       };
 
       /* --------------------------- Vector Export Pipeline --------------------------- */
-      const runExport = async () => {
-        setExportState({ step: 0, done: false });
-        for (let i = 0; i < EXPORT_STEPS.length; i++) {
-          setExportState({ step: i, done: false });
-          await new Promise((r) => setTimeout(r, 650));
-        }
-        const method = await exportPDF(elements, byId, poster, sizeKey);
-        setExportState({ step: EXPORT_STEPS.length, done: true, method });
-      };
+      /* ---------------------- Align & distribute -------------------------------
+         Works on the union bounding box of the selection (or the sheet itself
+         when only one object is selected), matching Figma/Illustrator semantics.
+           align:      pᵢ ← f(B)  where B is the reference box
+           distribute: gaps equalised as  gap = (span − Σwᵢ) / (n − 1)          */
+      const alignSelection = useCallback((mode) => {
+        const ids = Array.from(selectedIds);
+        const boxes = elements.filter((el) => selectedIds.has(el.id) && isBox(el));
+        if (!boxes.length) return;
+        const ref = boxes.length > 1
+          ? { x: Math.min(...boxes.map(b => b.x)), y: Math.min(...boxes.map(b => b.y)),
+              r: Math.max(...boxes.map(b => b.x + b.w)), b: Math.max(...boxes.map(b => b.y + b.h)) }
+          : { x: 0, y: 0, r: poster.w, b: poster.h };
+        commit(elements);
+        setElements((prev) => prev.map((el) => {
+          if (!selectedIds.has(el.id) || !isBox(el)) return el;
+          switch (mode) {
+            case 'left':    return { ...el, x: round(ref.x) };
+            case 'hcenter': return { ...el, x: round((ref.x + ref.r) / 2 - el.w / 2) };
+            case 'right':   return { ...el, x: round(ref.r - el.w) };
+            case 'top':     return { ...el, y: round(ref.y) };
+            case 'vcenter': return { ...el, y: round((ref.y + ref.b) / 2 - el.h / 2) };
+            case 'bottom':  return { ...el, y: round(ref.b - el.h) };
+            default:        return el;
+          }
+        }));
+      }, [selectedIds, elements, poster, commit]);
 
-      const exportSVG = () => {
-        const svg = buildSVG(elements, byId, poster);
-        downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), `sciposter_${sizeKey}.svg`);
-      };
+      const distributeSelection = useCallback((axis) => {
+        const boxes = elements.filter((el) => selectedIds.has(el.id) && isBox(el));
+        if (boxes.length < 3) return;
+        const k = axis === 'x' ? 'x' : 'y', d = axis === 'x' ? 'w' : 'h';
+        const sorted = [...boxes].sort((a, b) => a[k] - b[k]);
+        const span = (sorted.at(-1)[k] + sorted.at(-1)[d]) - sorted[0][k];
+        const gap = (span - sorted.reduce((s, b) => s + b[d], 0)) / (sorted.length - 1);
+        const pos = {};
+        let cur = sorted[0][k];
+        sorted.forEach((b) => { pos[b.id] = round(cur); cur += b[d] + gap; });
+        commit(elements);
+        setElements((prev) => prev.map((el) => (pos[el.id] !== undefined ? { ...el, [k]: pos[el.id] } : el)));
+      }, [selectedIds, elements, commit]);
+
+      const matchSize = useCallback((dim) => {
+        const boxes = elements.filter((el) => selectedIds.has(el.id) && isBox(el));
+        if (boxes.length < 2) return;
+        const target = boxes[0];
+        commit(elements);
+        setElements((prev) => prev.map((el) => (selectedIds.has(el.id) && isBox(el)
+          ? { ...el, ...(dim === 'w' || dim === 'both' ? { w: target.w } : {}), ...(dim === 'h' || dim === 'both' ? { h: target.h } : {}) }
+          : el)));
+      }, [selectedIds, elements, commit]);
+
+      /* ------------------------------ Export ----------------------------------- */
+      const [exportOpen, setExportOpen] = useState(false);
+      const [exportFmt, setExportFmt] = useState('pdf');
+      const [exportDpi, setExportDpi] = useState(300);
+
+      const posterName = useCallback(() => {
+        const banner = elements.find((e) => e.type === 'section' && e.sectionKind === 'banner' && e.title);
+        const raw = (banner?.title || `posteretto_${sizeKey}`).trim().toLowerCase();
+        return raw.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'posteretto';
+      }, [elements, sizeKey]);
+
+      const runExport = useCallback(async () => {
+        setExportState({ busy: true, format: exportFmt });
+        // Yield a frame so selection chrome is unmounted before serialising.
+        await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 40)));
+        const name = posterName();
+        let result;
+        try {
+          const svg = buildSVG(elements, byId, poster);
+          if (exportFmt === 'svg') result = exportSVGFile(svg, name);
+          else if (exportFmt === 'png' || exportFmt === 'jpg') result = await exportRaster(svg, poster, exportDpi, exportFmt, name);
+          else {
+            try { result = await exportPDFFile(svg, poster, name); }
+            catch (err) { console.warn('Vector PDF path failed, falling back:', err); result = exportPrintFallback(svg, poster, name); }
+          }
+        } catch (err) {
+          console.error(err);
+          result = { ok: false, detail: err?.message || 'Export failed. Try a different format.' };
+        }
+        setExportState({ busy: false, format: exportFmt, result });
+      }, [elements, byId, poster, exportFmt, exportDpi, posterName]);
+
+      const closeExport = () => { setExportOpen(false); setExportState(null); };
 
       /* --------------------------- Interaction start --------------------------- */
       const beginMove = (e, el) => {
-        if (e.button === 1) return; 
-        
+        if (e.button === 1) return;
+        if (el.locked) { e.stopPropagation(); setSelectedIds(new Set([el.id])); return; }
         if (editingId === el.id || tool !== 'select') return;
         e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId);
 
@@ -587,11 +1479,44 @@
         };
       };
 
+      /* Read a dropped/chosen file straight onto a figure block. */
+      const attachFigureImage = useCallback((id, file) => {
+        if (!file || !file.type?.startsWith('image/')) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          setElements((prev) => {
+            history.current.past.push(prev);
+            history.current.future = [];
+            return prev.map((el) => el.id === id ? { ...el, src: reader.result } : el);
+          });
+        };
+        reader.readAsDataURL(file);
+      }, []);
+
+      /* Apply / remove a list marker on the block the caret currently sits in. */
+      const applyListStyle = useCallback((styleKey) => {
+        const root = document.querySelector('[data-rich-editor="1"]');
+        if (!root) return;
+        const blk = currentBlock(root);
+        if (!blk) return;
+        if (styleKey === '__none') blk.removeAttribute('data-list');
+        else blk.setAttribute('data-list', styleKey);
+        root.focus();
+      }, []);
+
       const beginRotate = (e, el) => {
         if (e.button === 1) return;
         e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId);
         setSelectedIds(new Set([el.id]));
-        interaction.current = { kind: 'rotate', id: el.id, pointerId: e.pointerId, start: { ...el }, startElements: elements, hasChanged: false };
+        // Record where the pointer grabbed relative to the centre. Rotation is
+        // then applied as a DELTA from the element's existing angle, so grabbing
+        // the handle never snaps the element to face the cursor.
+        const c = surfaceRef.current?.getBoundingClientRect();
+        const cx = (el.x + el.w / 2), cy = (el.y + el.h / 2);
+        const pStart = c ? { x: (e.clientX - c.left) / zoom, y: (e.clientY - c.top) / zoom } : { x: cx, y: cy - 1 };
+        const grabAngle = Math.atan2(pStart.y - cy, pStart.x - cx) * (180 / Math.PI);
+        interaction.current = { kind: 'rotate', id: el.id, pointerId: e.pointerId, start: { ...el },
+                                grabAngle, startRot: el.rot || 0, startElements: elements, hasChanged: false };
       };
 
       const beginCropMove = (e, el) => {
@@ -614,7 +1539,7 @@
         }
         
         if (tool === 'connector') {
-          const hit = elementAt(p.x, p.y, elements, null);
+          const hit = (freeArrows || e.altKey) ? null : elementAt(p.x, p.y, elements, null);
           const start = hit ? { elId: hit.id, anchor: 'auto', x: p.x, y: p.y } : { elId: null, anchor: 'auto', x: p.x, y: p.y };
           interaction.current = { kind: 'draw-connector', pointerId: e.pointerId, start, curEnd: { x: p.x, y: p.y }, startElements: elements };
           setDraft({ kind: 'connector', variant: pendingVariant, start, end: { elId: null, anchor: 'auto', x: p.x, y: p.y } });
@@ -699,9 +1624,32 @@
           const p = toPoster(e.clientX, e.clientY);
           const cx = it.start.x + it.start.w / 2;
           const cy = it.start.y + it.start.h / 2;
-          let angle = Math.atan2(p.y - cy, p.x - cx) * (180 / Math.PI) + 90;
-          if (e.shiftKey) angle = Math.round(angle / 15) * 15; 
-          setElements(prev => prev.map(el => el.id === it.id ? { ...el, rot: Math.round(angle) } : el));
+          const nowAngle = Math.atan2(p.y - cy, p.x - cx) * (180 / Math.PI);
+          let angle = it.startRot + (nowAngle - it.grabAngle);
+          angle = ((angle % 360) + 360) % 360;
+
+          /* Detent model. Cardinal angles (0/90/180/270) get a wide capture
+             window so "perfectly horizontal / vertical" is easy to land on and
+             hard to lose; 15° steps get a narrow one. Alt disables snapping for
+             free rotation.
+                 snapped = argmin |θ − dᵢ|  subject to |θ − dᵢ| ≤ toleranceᵢ     */
+          let snappedTo = null;
+          if (!e.altKey) {
+            const dist = (a, b) => { const d = Math.abs(((a - b) % 360 + 540) % 360 - 180); return 180 - d; };
+            const CARDINAL_TOL = 6, STEP_TOL = 2.5;
+            let best = null;
+            for (const d of [0, 90, 180, 270]) {
+              const dd = dist(angle, d);
+              if (dd <= CARDINAL_TOL && (!best || dd < best.d)) best = { d: dd, val: d, hard: true };
+            }
+            if (!best) {
+              const step = Math.round(angle / 15) * 15;
+              if (dist(angle, step) <= STEP_TOL) best = { d: dist(angle, step), val: ((step % 360) + 360) % 360, hard: false };
+            }
+            if (best) { angle = best.val; snappedTo = best; }
+          }
+          setRotSnap(snappedTo ? { angle, hard: snappedTo.hard } : null);
+          setElements(prev => prev.map(el => el.id === it.id ? { ...el, rot: Math.round(angle * 10) / 10 } : el));
         }
         else if (it.kind === 'resize') {
           it.hasChanged = true;
@@ -829,7 +1777,7 @@
            it.hasChanged = true;
            if (it.kind === 'endpoint') {
              const p = toPoster(e.clientX, e.clientY);
-             const hit = elementAt(p.x, p.y, elements, null);
+             const hit = (freeArrows || e.altKey) ? null : elementAt(p.x, p.y, elements, null);
              setHoverStitch(hit ? hit.id : null);
              setElements((prev) => prev.map((el) => el.id === it.id ? { ...el, [it.which]: hit ? { elId: hit.id, anchor: 'auto', x: p.x, y: p.y } : { elId: null, anchor: 'auto', x: p.x, y: p.y } } : el));
            } else {
@@ -845,7 +1793,7 @@
         }
         else if (it.kind === 'draw-connector') {
           const p = toPoster(e.clientX, e.clientY);
-          const hit = elementAt(p.x, p.y, elements, it.start.elId);
+          const hit = (freeArrows || e.altKey) ? null : elementAt(p.x, p.y, elements, it.start.elId);
           setHoverStitch(hit ? hit.id : null);
           const end = hit ? { elId: hit.id, anchor: 'auto', x: p.x, y: p.y } : { elId: null, anchor: 'auto', x: p.x, y: p.y };
           it.curEnd = end;
@@ -915,7 +1863,7 @@
         else if (['move', 'resize', 'rotate', 'endpoint', 'move-connector'].includes(it.kind)) {
           if (it.hasChanged) commit(it.startElements);
         }
-        interaction.current = null; setGuides([]); setHoverStitch(null);
+        interaction.current = null; setGuides([]); setHoverStitch(null); setRotSnap(null);
       };
 
       const t = dark
@@ -968,10 +1916,19 @@
             
             <div className="flex-1" />
 
+            {saveHint && <div className="text-[11px] px-2 py-1 rounded-md bg-cyan-500/10 text-cyan-400">{saveHint}</div>}
+            <input ref={projectInputRef} type="file" accept="application/json,.json" className="hidden"
+              onChange={(e) => { openProject(e.target.files?.[0]); e.target.value = ''; }} />
+            <button onClick={() => projectInputRef.current?.click()} title="Open a saved .json project"
+              className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-1.5 ${t.chip} ${t.hover}`}>Open</button>
+            <button onClick={saveProject} title="Save this poster as a .json project file"
+              className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-1.5 ${t.chip} ${t.hover}`}>Save</button>
+            <button onClick={() => setShowGrid(g => !g)} title="Toggle grid" className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-1.5 ${t.chip} ${t.hover} ${showGrid ? 'text-cyan-400' : t.sub}`}><Ruler size={14} /> Grid</button>
             <button onClick={() => setSnapOn((s) => !s)} title="Toggle snapping" className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-1.5 ${t.chip} ${t.hover} ${snapOn ? 'text-cyan-400' : t.sub}`}><Magnet size={14} /> Snap</button>
             <button onClick={() => setDark((d) => !d)} className={`h-9 w-9 grid place-items-center rounded-lg border ${t.chip} ${t.hover}`}>{dark ? <Sun size={15} /> : <Moon size={15} />}</button>
-            <button onClick={runExport} disabled={!!exportState} className="h-9 pl-3 pr-4 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-cyan-500/25 hover:brightness-110 transition">
-              {exportState && !exportState.done ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
+            <button onClick={() => { setExportState(null); setExportOpen(true); }} disabled={exportState?.busy}
+              className="h-9 pl-3 pr-4 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 text-white text-sm font-medium flex items-center gap-2 shadow-lg shadow-cyan-500/25 hover:brightness-110 transition disabled:opacity-60">
+              {exportState?.busy ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Export
             </button>
           </header>
 
@@ -983,27 +1940,42 @@
               <button title="Text" onClick={addText} className={`h-11 w-11 grid place-items-center rounded-xl ${t.hover}`}><Type size={19} /></button>
               
               <FlyoutTool icon={LayoutTemplate} label="Section" theme={t} active={false} open={menu === 'section'} onEnter={() => setMenu('section')} onLeave={() => setMenu(null)}>
-                <div className="text-[11px] uppercase tracking-wide mb-2 opacity-60 px-1">Scientific sections</div>
-                <div className="grid grid-cols-1 gap-1">
-                  {SECTION_PRESETS.map((s) => (
-                    <button key={s.key} onClick={() => { addSection(s); setMenu(null); }} className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left ${t.hover}`}>
-                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.accent }} />{s.label}
-                    </button>
+                <div className="w-[15rem] max-h-[74vh] overflow-y-auto overflow-x-hidden pr-1">
+                  {['Standard', 'Layout'].map((g) => (
+                    <div key={g} className="mb-2">
+                      <div className="text-[10px] uppercase tracking-[0.15em] mb-1 opacity-50 px-1">{g === 'Standard' ? 'Scientific sections' : 'Layout blocks'}</div>
+                      <div className="grid grid-cols-1 gap-0.5">
+                        {SECTION_PRESETS.filter((p) => p.group === g).map((p) => (
+                          <button key={p.key} onClick={() => { addSection(p); setMenu(null); }}
+                            className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left ${t.hover}`}>
+                            <SectionGlyph preset={p} />
+                            <span className="truncate">{p.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                   <div className="my-1 h-px bg-current opacity-10" />
-                  <button onClick={() => { addCustomSection(); setMenu(null); }} className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left ${t.hover}`}>
-                    <Plus size={13} className="text-indigo-400 shrink-0" /> Custom section
+                  <button onClick={() => { addCustomSection(); setMenu(null); }} className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left w-full ${t.hover}`}>
+                    <Plus size={13} className="text-indigo-400 shrink-0" /> Blank section
                   </button>
                 </div>
               </FlyoutTool>
 
               <FlyoutTool icon={Square} label="Shape" theme={t} active={false} open={menu === 'shape'} onEnter={() => setMenu('shape')} onLeave={() => setMenu(null)}>
-                <div className="text-[11px] uppercase tracking-wide mb-2 opacity-60 px-1">Shapes</div>
-                <div className="grid grid-cols-2 gap-1">
-                  {SHAPE_PRESETS.map((s) => (
-                    <button key={s.key} onClick={() => { addShape(s); setMenu(null); }} className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-md ${t.hover}`}>
-                      <s.icon size={18} /><span className="text-[11px]">{s.label}</span>
-                    </button>
+                <div className="w-[16.5rem] max-h-[74vh] overflow-y-auto overflow-x-hidden pr-1">
+                  {['Basic', 'Polygon', 'Arrows', 'Flow'].map((g) => (
+                    <div key={g} className="mb-2">
+                      <div className="text-[10px] uppercase tracking-[0.15em] mb-1 opacity-50 px-1">{g}</div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {SHAPE_PRESETS.filter((p) => p.group === g).map((p) => (
+                          <button key={p.key} title={p.label} onClick={() => { addShape(p); setMenu(null); }}
+                            className={`aspect-square w-full grid place-items-center rounded-md border border-transparent ${t.hover}`}>
+                            <ShapeGlyph preset={p} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </FlyoutTool>
@@ -1029,6 +2001,7 @@
 
             {/* Canvas Container */}
             <main id="workspace-bg" ref={viewportRef} className={`flex-1 min-w-0 overflow-auto relative ${t.stage} print:overflow-visible print:bg-white`}
+              onDragOver={onCanvasDragOver} onDragLeave={onCanvasDragLeave} onDrop={onCanvasDrop}
               onPointerDown={(e) => {
                 if (e.target.id === 'workspace-bg' || e.target.id === 'workspace-center') {
                    if (tool !== 'select') {
@@ -1037,7 +2010,10 @@
                       setMenu(null);
                    } else if (!e.ctrlKey && !e.metaKey) {
                       setSelectedIds(new Set());
-                      if (selected?.type === 'image') setEditingId(null);
+                      // Always drop out of editing — a stuck editingId was what
+                      // made tables impossible to deselect and killed undo.
+                      setEditingId(null);
+                      setEditTarget('body');
                       setMenu(null);
                    }
                 }
@@ -1081,7 +2057,7 @@
                   patchSelected({ imgW: newW, imgH: newH, imgX: newX, imgY: newY });
                 }
               }}
-              style={{ cursor: isPanning ? 'grabbing' : canvasCursor, backgroundImage: dark && !exportState ? 'radial-gradient(circle at 1px 1px, rgba(148,163,184,0.10) 1px, transparent 0)' : !exportState ? 'radial-gradient(circle at 1px 1px, rgba(100,116,139,0.18) 1px, transparent 0)' : 'none', backgroundSize: '22px 22px' }}>
+              style={{ cursor: isPanning ? 'grabbing' : canvasCursor, backgroundImage: dark && !exportState?.busy ? 'radial-gradient(circle at 1px 1px, rgba(148,163,184,0.10) 1px, transparent 0)' : !exportState?.busy ? 'radial-gradient(circle at 1px 1px, rgba(100,116,139,0.18) 1px, transparent 0)' : 'none', backgroundSize: '22px 22px' }}>
               
               <div id="workspace-center" className="min-w-full min-h-full flex items-center justify-center p-8 print:p-0">
                 <div className="relative" style={{ width: poster.w * zoom, height: poster.h * zoom, pointerEvents: 'none' }}>
@@ -1090,9 +2066,16 @@
                     onPointerDown={onSurfacePointerDown}>
 
                     {elements.filter(isBox).map((el) => (
-                      <ElementView key={el.id} el={el} selected={selectedIds.has(el.id)} editing={el.id === editingId} stitchTarget={hoverStitch === el.id}
-                        onPointerDown={(e) => beginMove(e, el)} onSelect={() => setSelectedIds(new Set([el.id]))} onStartEdit={() => setEditingId(el.id)}
-                        onCommitText={(f, v) => commitEdit(el.id, f, v)} onEndEdit={() => setEditingId(null)} onCropMove={(e) => beginCropMove(e, el)} />
+                      <ElementView key={el.id} el={el} selected={selectedIds.has(el.id)} editing={el.id === editingId}
+                        editTarget={el.id === editingId ? editTarget : null} stitchTarget={hoverStitch === el.id}
+                        onPointerDown={(e) => beginMove(e, el)} onSelect={() => setSelectedIds(new Set([el.id]))}
+                        onStartEdit={() => { setEditTarget('body'); setEditingId(el.id); }}
+                        onStartEditTitle={() => { setEditTarget('title'); setEditingId(el.id); setSelectedIds(new Set([el.id])); }}
+                        onCommitText={(f, v) => commitEdit(el.id, f, v)}
+                        onEndEdit={() => { setEditingId(null); setEditTarget('body'); }}
+                        onCropMove={(e) => beginCropMove(e, el)}
+                        onFigureDrop={(file) => attachFigureImage(el.id, file)}
+                        onFigureBrowse={() => { figureTargetRef.current = el.id; figureInputRef.current?.click(); }} />
                     ))}
 
                     <svg className="absolute top-0 left-0" width={poster.w} height={poster.h} style={{ overflow: 'visible', pointerEvents: 'none' }}>
@@ -1113,17 +2096,46 @@
                     </svg>
                   </div>
                   
-                  {!exportState && <GuidesOverlay guides={guides} zoom={zoom} poster={poster} dark={dark} />}
+                  {showGrid && !exportState?.busy && (
+                    <div className="absolute top-0 left-0 pointer-events-none" style={{
+                      width: poster.w * zoom, height: poster.h * zoom,
+                      backgroundImage: `linear-gradient(to right, rgba(6,182,212,0.22) 0.5px, transparent 0.5px), linear-gradient(to bottom, rgba(6,182,212,0.22) 0.5px, transparent 0.5px)`,
+                      backgroundSize: `${gridMm * zoom}px ${gridMm * zoom}px` }} />
+                  )}
+                  {!exportState?.busy && <GuidesOverlay guides={guides} zoom={zoom} poster={poster} dark={dark} />}
                   
                   {/* Handle Overlays */}
-                  {!exportState && selected && isBox(selected) && (!editingId || selected.type === 'image') && (
+                  {!exportState?.busy && selectedIds.size > 1 && (
+                    <MultiSelectOverlay elements={elements} selectedIds={selectedIds} byId={byId} zoom={zoom} />
+                  )}
+                  {!exportState?.busy && rotSnap && selected && (
+                    <RotationReadout el={selected} zoom={zoom} snap={rotSnap} />
+                  )}
+                  {!exportState?.busy && selected && isBox(selected) && (!editingId || selected.type === 'image') && (
                     <SelectionOverlay el={selected} zoom={zoom} onResizeStart={beginResize} onRotateStart={beginRotate} isCropping={editingId === selected.id} />
                   )}
-                  {!exportState && selected && selected.type === 'connector' && (
+                  {!exportState?.busy && selected && selected.type === 'connector' && (
                     <ConnectorHandles el={selected} byId={byId} zoom={zoom} onEndpointStart={beginEndpoint} />
                   )}
                 </div>
               </div>
+              {/* Format toolbar — docked to the workspace, so zoom/pan/rotation
+                  can never move it off-screen or under the poster. */}
+              {editingId && selected && (selected.type === 'text' || (selected.type === 'section' && selected.sectionKind !== 'table')) && (
+                <FormatToolbar t={t} el={selected}
+                  onPatch={(patch) => commitEdit(selected.id, Object.keys(patch)[0], Object.values(patch)[0])}
+                  onListStyle={applyListStyle} />
+              )}
+              <input ref={figureInputRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f && figureTargetRef.current) attachFigureImage(figureTargetRef.current, f); e.target.value = ''; }} />
+              {dropActive && (
+                <div className="absolute inset-0 z-40 pointer-events-none grid place-items-center bg-cyan-500/10 backdrop-blur-[1px]">
+                  <div className="px-5 py-3 rounded-xl bg-cyan-500 text-white text-sm font-semibold shadow-2xl flex items-center gap-2 border-2 border-white/40">
+                    <ImagePlus size={16} /> Drop images to place them here
+                  </div>
+                  <div className="absolute inset-3 rounded-2xl border-2 border-dashed border-cyan-400" />
+                </div>
+              )}
             </main>
 
             {/* Right Sidebar */}
@@ -1132,6 +2144,9 @@
                 selectedIds={selectedIds}
                 onPatch={patchSelected} onDelete={deleteSelected} onDuplicate={duplicateSelected} onFront={bringToFront}
                 customSize={customSize} setCustomSize={setCustomSize} setSizeKey={setSizeKey}
+                onAlign={alignSelection} onDistribute={distributeSelection} onMatchSize={matchSize}
+                showGrid={showGrid} setShowGrid={setShowGrid} gridMm={gridMm} setGridMm={setGridMm}
+                freeArrows={freeArrows} setFreeArrows={setFreeArrows}
                 onUnstitch={(which) => patchSelected({ [which]: (() => {
                   const { A, B } = resolveConnector(selected, byId);
                   return { elId: null, anchor: 'auto', x: (which === 'start' ? A.x : B.x), y: (which === 'start' ? A.y : B.y) };
@@ -1172,9 +2187,10 @@
             </div>
           )}
 
-          {exportState && (
-            <ExportModal theme={t} state={exportState} steps={EXPORT_STEPS} sizeKey={sizeKey} poster={poster}
-              onClose={() => setExportState(null)} onExportSVG={exportSVG} />
+          {exportOpen && (
+            <ExportModal theme={t} state={exportState} poster={poster} sizeKey={sizeKey}
+              format={exportFmt} setFormat={setExportFmt} dpi={exportDpi} setDpi={setExportDpi}
+              elementCount={elements.length} onRun={runExport} onClose={closeExport} />
           )}
 
         </div>
@@ -1195,24 +2211,212 @@
     }
     const roundBox = (b) => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) });
 
-    function ElementView({ el, selected, editing, stitchTarget, onPointerDown, onStartEdit, onCommitText, onEndEdit, onCropMove }) {
-      const base = { position: 'absolute', left: el.x, top: el.y, width: el.w, height: el.h, cursor: editing && el.type !== 'image' ? 'text' : 'move', 
-                     transform: `rotate(${el.rot || 0}deg)` };
-      
-      if (el.type === 'text') {
-        const style = { ...base, padding: 8, fontFamily: el.fontFamily || 'sans-serif', fontSize: el.fontSize, color: el.color, fontWeight: el.bold ? 700 : 400, textAlign: el.align, lineHeight: el.lineHeight, background: selected ? 'rgba(6,182,212,0.04)' : 'transparent', overflow: 'hidden', wordBreak: 'break-word' };
-        if (editing) return <textarea autoFocus defaultValue={el.text} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { onCommitText('text', e.target.value); onEndEdit(); }} style={{ ...style, resize: 'none', border: 'none', outline: '1px solid #06b6d4' }} />;
-        return <div style={style} onPointerDown={onPointerDown} onDoubleClick={onStartEdit}>{el.text}</div>;
-      }
-      
-      if (el.type === 'section') {
+
+    /* ---------------------------------------------------------------------
+       SectionView — one component, many layouts. `sectionKind` selects the
+       body renderer and `headerStyle` the title treatment; the two compose
+       freely, which is where the layout variety of real posters comes from.
+       The export serialiser in buildSVG mirrors these rules exactly.
+       ------------------------------------------------------------------- */
+    const sectionLines = (el) => String(el.text ?? '').split('\n').filter(l => l.trim() !== '');
+
+    function SectionHeader({ el, pad, onStartEditTitle }) {
+      const hs = el.headerStyle || 'bar';
+      // The banner draws its own title inside the body (large and centred). Letting
+      // SectionHeader draw it too was what produced the duplicate in the corner.
+      if (el.sectionKind === 'banner') return null;
+      if (hs === 'none' || !el.title) return null;
+      const fs = Math.max(8, el.fontSize * 1.35);
+      const ta = el.titleAlign || 'left';
+      const font = { fontFamily: el.fontFamily || 'sans-serif', fontSize: fs, fontWeight: 700, textAlign: ta };
+      const dbl = { onDoubleClick: (e) => { e.stopPropagation(); onStartEditTitle && onStartEditTitle(); }, style: { cursor: 'text' } };
+      if (hs === 'bar')
+        return <div {...dbl} style={{ background: el.accent, color: '#fff', padding: `${pad * 0.55}px ${pad}px`, cursor: 'text', ...font }}>{el.title}</div>;
+      if (hs === 'tab')
         return (
-          <div style={{ ...base, background: el.fill, borderRadius: el.square ? 0 : 6, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }} onPointerDown={onPointerDown} onDoubleClick={onStartEdit}>
-            <div style={{ background: el.accent, color: '#fff', padding: '6px 10px', fontFamily: el.fontFamily || 'sans-serif', fontSize: Math.max(13, el.fontSize + 2), fontWeight: 700 }}>{el.title}</div>
-            {editing ? <textarea autoFocus defaultValue={el.text} onPointerDown={(e) => e.stopPropagation()} onBlur={(e) => { onCommitText('text', e.target.value); onEndEdit(); }} style={{ width: '100%', height: 'calc(100% - 34px)', resize: 'none', border: 'none', outline: 'none', padding: 10, fontFamily: el.fontFamily || 'sans-serif', fontSize: el.fontSize, color: el.color, textAlign: el.align, lineHeight: el.lineHeight, background: 'transparent' }} /> : <div style={{ padding: 10, fontFamily: el.fontFamily || 'sans-serif', fontSize: el.fontSize, color: el.color, textAlign: el.align, lineHeight: el.lineHeight, overflow: 'hidden', whiteSpace: 'pre-wrap' }}>{el.text}</div>}
+          <div {...dbl} style={{ padding: `${pad * 0.5}px ${pad}px 0`, textAlign: ta, cursor: 'text' }}>
+            <span style={{ display: 'inline-block', background: el.accent, color: '#fff', padding: `${pad * 0.35}px ${pad}px`, borderRadius: (el.radius || 0) * 0.8, ...font, textAlign: 'left' }}>{el.title}</span>
+          </div>
+        );
+      if (hs === 'underline')
+        return (
+          <div {...dbl} style={{ padding: `${pad * 0.6}px ${pad}px ${pad * 0.35}px`, color: el.accent, borderBottom: `${Math.max(1, fs * 0.09)}px solid ${el.accent}`, margin: `0 ${pad}px`, cursor: 'text', ...font }}>{el.title}</div>
+        );
+      return <div {...dbl} style={{ padding: `${pad * 0.6}px ${pad}px 0`, color: el.accent, cursor: 'text', ...font }}>{el.title}</div>;
+    }
+
+    function SectionBody({ el, pad, editing, editTarget, onCommitText, onEndEdit, onStartEditCaption, onFigureDrop, onFigureBrowse }) {
+      const kind = el.sectionKind || 'plain';
+      const font = { fontFamily: el.fontFamily || 'sans-serif', fontSize: el.fontSize, color: el.color, lineHeight: el.lineHeight, textAlign: el.align };
+      const boxStyle = { padding: pad, overflow: 'hidden', flex: 1, minHeight: 0, ...font };
+      const baseStyle = { size: el.fontSize, family: el.fontFamily || 'sans-serif', color: el.color, bold: false, italic: false };
+
+      /* ---- Banner: title is the primary editable, authors are secondary ---- */
+      if (kind === 'banner') {
+        const tFs = el.fontSize * 2.6;
+        const titleStyle = { fontSize: tFs, fontWeight: 800, color: el.color, lineHeight: 1.1, textAlign: 'center' };
+        if (editing && editTarget === 'title') {
+          return (
+            <div style={{ ...boxStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <RichTextEditor el={el} html={el.titleHtml != null ? el.titleHtml : plainToHtml(el.title)}
+                style={{ ...titleStyle, background: 'rgba(255,255,255,0.14)', outline: '2px solid rgba(255,255,255,0.5)', borderRadius: 4 }}
+                onCommit={(h) => onCommitText('titleHtml', h)} onEndEdit={onEndEdit} />
+            </div>
+          );
+        }
+        if (editing && editTarget === 'body') {
+          return (
+            <div style={{ ...boxStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={titleStyle}>
+                <RichTextRender el={{ ...el, html: el.titleHtml, text: el.title, accent: el.color }} baseStyle={{ ...baseStyle, size: tFs, color: el.color }} style={{}} />
+              </div>
+              <RichTextEditor el={el} html={el.html != null ? el.html : plainToHtml(el.text)}
+                style={{ fontSize: el.fontSize * 1.15, color: el.color, textAlign: 'center', marginTop: pad * 0.35, background: 'rgba(255,255,255,0.14)', outline: '2px solid rgba(255,255,255,0.5)', borderRadius: 4 }}
+                onCommit={(h) => onCommitText('html', h)} onEndEdit={onEndEdit} />
+            </div>
+          );
+        }
+        return (
+          <div style={{ ...boxStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center', textAlign: 'center', cursor: 'text' }}>
+            <div style={titleStyle}>
+              <RichTextRender el={{ ...el, html: el.titleHtml, text: el.title, accent: el.color }} baseStyle={{ ...baseStyle, size: tFs, color: el.color }} style={{}} />
+            </div>
+            <div style={{ marginTop: pad * 0.35, fontSize: el.fontSize * 1.15, color: el.color, opacity: 0.92 }}>
+              <RichTextRender el={{ ...el, accent: el.color }} baseStyle={{ ...baseStyle, size: el.fontSize * 1.15, color: el.color }} style={{}} />
+            </div>
           </div>
         );
       }
+
+      /* ---- Figure: caption is its own editable, image area accepts drops ---- */
+      if (kind === 'figure') {
+        const capH = el.fontSize * el.lineHeight * 2.6;
+        return (
+          <div style={{ ...boxStyle, display: 'flex', flexDirection: 'column', gap: pad * 0.5 }}>
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; }}
+              onDrop={(e) => {
+                if (!e.dataTransfer?.files?.length) return;
+                e.preventDefault(); e.stopPropagation();
+                onFigureDrop && onFigureDrop(e.dataTransfer.files[0]);
+              }}
+              style={{ flex: 1, minHeight: 0, background: el.src ? 'transparent' : 'rgba(100,116,139,0.10)',
+                       border: el.src ? 'none' : `1px dashed ${el.accent}`, display: 'grid', placeItems: 'center', overflow: 'hidden' }}>
+              {el.src
+                ? <img src={el.src} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: el.fit || 'contain' }} />
+                : <span onDoubleClick={(e) => { e.stopPropagation(); onFigureBrowse && onFigureBrowse(); }}
+                         style={{ fontSize: el.fontSize * 0.95, color: el.accent, opacity: 0.8, textAlign: 'center', padding: pad, cursor: 'pointer' }}>
+                     Drop an image here<br/><span style={{ fontSize: el.fontSize * 0.75 }}>or double-click to browse</span>
+                   </span>}
+            </div>
+            {editing && editTarget !== 'title' ? (
+              <RichTextEditor el={el} html={el.html != null ? el.html : plainToHtml(el.text)}
+                style={{ ...font, fontSize: el.fontSize * 0.92, minHeight: capH, background: 'rgba(255,255,255,0.55)', outline: `2px solid ${el.accent}`, borderRadius: 3 }}
+                onCommit={(h) => onCommitText('html', h)} onEndEdit={onEndEdit} />
+            ) : (
+              <div style={{ fontSize: el.fontSize * 0.92, maxHeight: capH, overflow: 'hidden', cursor: 'text' }}
+                   onDoubleClick={(e) => { e.stopPropagation(); onStartEditCaption && onStartEditCaption(); }}>
+                <span style={{ color: el.accent, fontWeight: 700 }}>{el.title ? el.title + '. ' : ''}</span>
+                <RichTextRender el={el} baseStyle={{ ...baseStyle, size: el.fontSize * 0.92 }} style={{ display: 'inline' }} />
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      /* ---- Table: cells are edited in place ---- */
+      if (kind === 'table') {
+        const rows = el.rows && el.rows.length ? el.rows : [['', '']];
+        const setCell = (ri, ci, v) => {
+          const next = rows.map((r, i) => i === ri ? r.map((c, j) => j === ci ? v : c) : [...r]);
+          onCommitText('rows', next);
+        };
+        return (
+          <div style={{ ...boxStyle, overflow: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: el.fontSize, tableLayout: 'fixed' }}>
+              <tbody>
+                {rows.map((r, ri) => (
+                  <tr key={ri} style={{ background: ri === 0 ? el.accent : (ri % 2 ? 'rgba(100,116,139,0.07)' : 'transparent') }}>
+                    {r.map((c, ci) => (
+                      <td key={ci} style={{ padding: `${pad * 0.3}px ${pad * 0.4}px`, color: ri === 0 ? '#fff' : el.color,
+                                            fontWeight: ri === 0 ? 700 : 400, border: `0.5px solid rgba(100,116,139,0.35)`,
+                                            overflow: 'hidden', verticalAlign: 'top' }}>
+                        {editing ? (
+                          <input value={c}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') onEndEdit(); }}
+                            onChange={(e) => setCell(ri, ci, e.target.value)}
+                            style={{ width: '100%', border: 'none', outline: 'none', background: 'rgba(255,255,255,0.22)',
+                                     font: 'inherit', color: 'inherit', fontWeight: 'inherit', padding: 0, borderRadius: 2 }} />
+                        ) : (
+                          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{c}</span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      /* ---- Everything else: one rich-text body ---- */
+      if (editing) {
+        return (
+          <RichTextEditor el={el} html={el.html != null ? el.html : plainToHtml(el.text)}
+            style={{ ...boxStyle, width: '100%', background: 'rgba(255,255,255,0.55)', outline: `2px solid ${el.accent}`,
+                     fontWeight: kind === 'callout' ? 600 : 400, overflow: 'auto' }}
+            onCommit={(h) => onCommitText('html', h)} onEndEdit={onEndEdit} />
+        );
+      }
+
+      if (kind === 'callout') {
+        return (
+          <div style={{ ...boxStyle, display: 'flex', alignItems: 'center', justifyContent: el.align === 'left' ? 'flex-start' : 'center', fontWeight: 600 }}>
+            <RichTextRender el={el} baseStyle={baseStyle} style={{ width: '100%' }} />
+          </div>
+        );
+      }
+      return <RichTextRender el={el} baseStyle={baseStyle} style={boxStyle} />;
+    }
+
+    function SectionView({ el, base, editing, editTarget, onPointerDown, onStartEdit, onStartEditTitle, onCommitText, onEndEdit, onFigureDrop, onFigureBrowse }) {
+      const pad = el.padding ?? 10;
+      return (
+        <div onPointerDown={onPointerDown} onDoubleClick={onStartEdit}
+             style={{ ...base, background: el.fill, borderRadius: el.radius || 0, overflow: 'hidden',
+                      display: 'flex', flexDirection: 'column',
+                      border: el.borderW ? `${el.borderW}px solid ${el.borderColor || el.accent}` : 'none',
+                      boxShadow: shadowCss(el) }}>
+          <SectionHeader el={el} pad={pad} onStartEditTitle={onStartEditTitle} />
+          <SectionBody el={el} pad={pad} editing={editing} editTarget={editTarget}
+                       onCommitText={onCommitText} onEndEdit={onEndEdit}
+                       onStartEditCaption={onStartEdit} onFigureDrop={onFigureDrop} onFigureBrowse={onFigureBrowse} />
+        </div>
+      );
+    }
+
+    function ElementView({ el, selected, editing, editTarget, stitchTarget, onPointerDown, onStartEdit, onStartEditTitle, onCommitText, onEndEdit, onCropMove, onFigureDrop, onFigureBrowse }) {
+      const base = { position: 'absolute', left: el.x, top: el.y, width: el.w, height: el.h,
+                     cursor: el.locked ? 'not-allowed' : (editing && el.type !== 'image' ? 'text' : 'move'),
+                     opacity: el.opacity ?? 1,
+                     transform: `rotate(${el.rot || 0}deg)` };
+      
+      if (el.type === 'text') {
+        const style = { ...base, padding: 8, fontFamily: el.fontFamily || 'sans-serif', fontSize: el.fontSize, color: el.color, fontWeight: el.bold ? 700 : 400, fontStyle: el.italic ? 'italic' : 'normal', textAlign: el.align, lineHeight: el.lineHeight, background: selected ? 'rgba(6,182,212,0.04)' : 'transparent', overflow: 'hidden', wordBreak: 'break-word' };
+        const baseStyle = { size: el.fontSize, family: el.fontFamily || 'sans-serif', color: el.color, bold: !!el.bold, italic: !!el.italic };
+        if (editing) {
+          return <RichTextEditor el={el} html={el.html != null ? el.html : plainToHtml(el.text)}
+                   style={{ ...style, outline: '1px solid #06b6d4', overflow: 'auto' }}
+                   onCommit={(h) => onCommitText('html', h)} onEndEdit={onEndEdit} />;
+        }
+        return <div style={style} onPointerDown={onPointerDown} onDoubleClick={onStartEdit}>
+                 <RichTextRender el={el} baseStyle={baseStyle} style={{}} />
+               </div>;
+      }
+      
+      if (el.type === 'section') return <SectionView el={el} base={base} editing={editing} editTarget={editTarget} onPointerDown={onPointerDown} onStartEdit={onStartEdit} onStartEditTitle={onStartEditTitle} onCommitText={onCommitText} onEndEdit={onEndEdit} onFigureDrop={onFigureDrop} onFigureBrowse={onFigureBrowse} />;
       
       if (el.type === 'image') {
         if (editing) {
@@ -1235,11 +2439,20 @@
       }
       
       if (el.type === 'shape') {
+        const sw = el.strokeWidth || 0;
+        // Inset by half the stroke so the border sits fully inside the box —
+        // this is what makes the on-screen bounds match the exported bounds.
+        const iw = Math.max(1, el.w - sw), ih = Math.max(1, el.h - sw);
+        const d = shapePath(el.shape, iw, ih, el.cornerRadius || 0);
+        const open = OPEN_SHAPES.has(el.shape) || el.fill === 'none';
         return (
           <div style={base} onPointerDown={onPointerDown}>
             <svg width={el.w} height={el.h} style={{ display: 'block', overflow: 'visible' }}>
-              {el.shape === 'rect' && <rect x={el.strokeWidth/2} y={el.strokeWidth/2} width={Math.max(0, el.w - el.strokeWidth)} height={Math.max(0, el.h - el.strokeWidth)} rx="4" fill={el.fill} stroke={el.stroke} strokeWidth={el.strokeWidth} />}
-              {el.shape === 'ellipse' && <ellipse cx={el.w/2} cy={el.h/2} rx={Math.max(0, el.w/2 - el.strokeWidth/2)} ry={Math.max(0, el.h/2 - el.strokeWidth/2)} fill={el.fill} stroke={el.stroke} strokeWidth={el.strokeWidth} />}
+              <g transform={`translate(${sw / 2} ${sw / 2})`}>
+                <path d={d} fill={open ? 'none' : el.fill} stroke={el.stroke} strokeWidth={sw}
+                      strokeDasharray={el.dashed ? `${sw * 3} ${sw * 2}` : undefined}
+                      strokeLinejoin={el.miter === false ? 'round' : 'miter'} strokeLinecap="butt" />
+              </g>
             </svg>
           </div>
         );
@@ -1323,6 +2536,76 @@
       );
     }
 
+
+    /* Rendered whenever more than one element is selected: every member gets a
+       dashed outline, and the union bounding box is drawn with a live count so
+       "Select all" is unmistakably visible. */
+    function selectionBounds(elements, selectedIds, byId) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0;
+      for (const el of elements) {
+        if (!selectedIds.has(el.id)) continue;
+        n++;
+        if (el.type === 'connector') {
+          const { A, B } = resolveConnector(el, byId);
+          x0 = Math.min(x0, A.x, B.x); y0 = Math.min(y0, A.y, B.y);
+          x1 = Math.max(x1, A.x, B.x); y1 = Math.max(y1, A.y, B.y);
+        } else {
+          x0 = Math.min(x0, el.x); y0 = Math.min(y0, el.y);
+          x1 = Math.max(x1, el.x + el.w); y1 = Math.max(y1, el.y + el.h);
+        }
+      }
+      if (!n || !isFinite(x0)) return null;
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, count: n };
+    }
+
+    function MultiSelectOverlay({ elements, selectedIds, byId, zoom }) {
+      const b = selectionBounds(elements, selectedIds, byId);
+      if (!b) return null;
+      return (
+        <div className="absolute top-0 left-0 pointer-events-none" style={{ zIndex: 55, width: '100%', height: '100%' }}>
+          {elements.filter((el) => selectedIds.has(el.id) && isBox(el)).map((el) => (
+            <div key={el.id} className="absolute" style={{
+              left: el.x * zoom, top: el.y * zoom, width: el.w * zoom, height: el.h * zoom,
+              transform: `rotate(${el.rot || 0}deg)`,
+              border: '1.5px dashed #06b6d4', background: 'rgba(6,182,212,0.09)', borderRadius: 2 }} />
+          ))}
+          <div className="absolute" style={{
+            left: b.x * zoom - 4, top: b.y * zoom - 4, width: b.w * zoom + 8, height: b.h * zoom + 8,
+            border: '2px solid #06b6d4', borderRadius: 3, boxShadow: '0 0 0 9999px rgba(6,182,212,0.045)' }} />
+          <div className="absolute text-[11px] px-2 py-0.5 rounded-full bg-cyan-500 text-white font-semibold shadow whitespace-nowrap"
+               style={{ left: b.x * zoom - 4, top: b.y * zoom - 28 }}>
+            {b.count} selected
+          </div>
+          {[[0, 0], [1, 0], [0, 1], [1, 1]].map(([fx, fy], i) => (
+            <div key={i} className="absolute bg-cyan-500 rounded-sm" style={{
+              width: 8, height: 8, left: (b.x + fx * b.w) * zoom - 4 + (fx ? 4 : -4), top: (b.y + fy * b.h) * zoom - 4 + (fy ? 4 : -4) }} />
+          ))}
+        </div>
+      );
+    }
+
+    /* Live angle readout while rotating; turns solid when a detent is captured. */
+    function RotationReadout({ el, zoom, snap }) {
+      const cx = (el.x + el.w / 2) * zoom, cy = (el.y + el.h / 2) * zoom;
+      const hard = snap.hard;
+      const a = ((el.rot || 0) % 360 + 360) % 360;
+      const cardinal = hard ? (a % 180 === 0 ? 'horizontal' : 'vertical') : null;
+      return (
+        <div className="absolute pointer-events-none" style={{ zIndex: 70, left: 0, top: 0 }}>
+          <svg className="absolute" style={{ left: cx - 200, top: cy - 200, overflow: 'visible' }} width="400" height="400">
+            {hard && <>
+              <line x1="0" y1="200" x2="400" y2="200" stroke="#ec4899" strokeWidth="1" strokeDasharray="6 5" opacity={a % 180 === 0 ? 1 : 0.25} />
+              <line x1="200" y1="0" x2="200" y2="400" stroke="#ec4899" strokeWidth="1" strokeDasharray="6 5" opacity={a % 180 === 90 ? 1 : 0.25} />
+            </>}
+          </svg>
+          <div className="absolute text-[11px] px-2 py-0.5 rounded font-semibold text-white shadow tabular-nums whitespace-nowrap"
+               style={{ left: cx + 14, top: cy - 10, background: hard ? '#ec4899' : '#06b6d4' }}>
+            {Math.round(a)}°{cardinal ? ` · ${cardinal}` : ''}
+          </div>
+        </div>
+      );
+    }
+
     function ConnectorHandles({ el, byId, zoom, onEndpointStart }) {
       const { A, B } = resolveConnector(el, byId);
       const dot = (pt, which, stitched) => <div onPointerDown={(e) => onEndpointStart(e, el, which)} className="absolute rounded-full shadow" style={{ width: 14, height: 14, left: pt.x * zoom - 7, top: pt.y * zoom - 7, border: '2px solid #06b6d4', background: stitched ? '#06b6d4' : '#fff', cursor: 'grab', pointerEvents: 'auto' }} />;
@@ -1331,22 +2614,81 @@
 
     function Group({ t, title, children }) { return <div className="px-4 py-3 border-b" style={{ borderColor: 'rgba(120,120,120,0.12)' }}><div className={`text-[11px] uppercase tracking-[0.15em] mb-2.5 ${t.sub}`}>{title}</div>{children}</div>; }
 
+    function AlignGlyph({ mode }) {
+      const S = 14;
+      const bar = (x, y, w, h, o) => <rect key={`${x}-${y}`} x={x} y={y} width={w} height={h} rx="0.6" fill="currentColor" opacity={o} />;
+      const guide = (x1, y1, x2, y2) => <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="currentColor" strokeWidth="1" opacity="0.95" />;
+      let body = null;
+      switch (mode) {
+        case 'left':     body = <>{guide(2,1,2,13)}{bar(3,3,8,3,0.85)}{bar(3,8,5,3,0.55)}</>; break;
+        case 'hcenter':  body = <>{guide(7,1,7,13)}{bar(2,3,10,3,0.85)}{bar(4,8,6,3,0.55)}</>; break;
+        case 'right':    body = <>{guide(12,1,12,13)}{bar(3,3,8,3,0.85)}{bar(6,8,5,3,0.55)}</>; break;
+        case 'top':      body = <>{guide(1,2,13,2)}{bar(3,3,3,8,0.85)}{bar(8,3,3,5,0.55)}</>; break;
+        case 'vcenter':  body = <>{guide(1,7,13,7)}{bar(3,2,3,10,0.85)}{bar(8,4,3,6,0.55)}</>; break;
+        case 'bottom':   body = <>{guide(1,12,13,12)}{bar(3,3,3,8,0.85)}{bar(8,6,3,5,0.55)}</>; break;
+        case 'distx':    body = <>{bar(1,3,3,8,0.85)}{bar(5.5,3,3,8,0.55)}{bar(10,3,3,8,0.85)}</>; break;
+        case 'disty':    body = <>{bar(3,1,8,3,0.85)}{bar(3,5.5,8,3,0.55)}{bar(3,10,8,3,0.85)}</>; break;
+        default: body = null;
+      }
+      return <svg width={S} height={S} viewBox="0 0 14 14" style={{ display: 'block' }}>{body}</svg>;
+    }
+
+    function AlignTools({ t, onAlign, onDistribute, onMatchSize, count }) {
+      const canDistribute = count >= 3;
+      const canMatch = count >= 2;
+      const Btn = ({ title, disabled, onClick, children }) => (
+        <button title={title} disabled={disabled} onClick={onClick}
+          className={`h-8 rounded-md border flex items-center justify-center ${t.hover} ${disabled ? 'opacity-30 cursor-not-allowed' : ''}`}>
+          {children}
+        </button>
+      );
+      return (
+        <div className={`rounded-lg border p-3 ${t.chip}`}>
+          <div className={`text-[10px] uppercase tracking-[0.15em] mb-2 ${t.sub}`}>Align</div>
+          <div className="grid grid-cols-6 gap-1.5">
+            <Btn title="Align left" onClick={() => onAlign('left')}><AlignGlyph mode="left" /></Btn>
+            <Btn title="Align horizontal centres" onClick={() => onAlign('hcenter')}><AlignGlyph mode="hcenter" /></Btn>
+            <Btn title="Align right" onClick={() => onAlign('right')}><AlignGlyph mode="right" /></Btn>
+            <Btn title="Align top" onClick={() => onAlign('top')}><AlignGlyph mode="top" /></Btn>
+            <Btn title="Align vertical centres" onClick={() => onAlign('vcenter')}><AlignGlyph mode="vcenter" /></Btn>
+            <Btn title="Align bottom" onClick={() => onAlign('bottom')}><AlignGlyph mode="bottom" /></Btn>
+          </div>
+
+          <div className={`text-[10px] uppercase tracking-[0.15em] mt-3 mb-2 ${t.sub}`}>Distribute</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <Btn title={canDistribute ? 'Distribute horizontally' : 'Needs 3 or more items'} disabled={!canDistribute} onClick={() => onDistribute('x')}><AlignGlyph mode="distx" /></Btn>
+            <Btn title={canDistribute ? 'Distribute vertically' : 'Needs 3 or more items'} disabled={!canDistribute} onClick={() => onDistribute('y')}><AlignGlyph mode="disty" /></Btn>
+          </div>
+
+          <div className={`text-[10px] uppercase tracking-[0.15em] mt-3 mb-2 ${t.sub}`}>Match size</div>
+          <div className="grid grid-cols-3 gap-1.5">
+            <button disabled={!canMatch} onClick={() => onMatchSize('w')} className={`h-8 rounded-md border text-[11px] ${t.hover} ${!canMatch ? 'opacity-30 cursor-not-allowed' : ''}`}>Width</button>
+            <button disabled={!canMatch} onClick={() => onMatchSize('h')} className={`h-8 rounded-md border text-[11px] ${t.hover} ${!canMatch ? 'opacity-30 cursor-not-allowed' : ''}`}>Height</button>
+            <button disabled={!canMatch} onClick={() => onMatchSize('both')} className={`h-8 rounded-md border text-[11px] ${t.hover} ${!canMatch ? 'opacity-30 cursor-not-allowed' : ''}`}>Both</button>
+          </div>
+          <div className={`text-[10px] mt-2 leading-relaxed ${t.sub}`}>Sizes are matched to the largest item in the selection.</div>
+        </div>
+      );
+    }
+
     function PropertiesPanel({ 
-      theme: t, selected, selectedIds, poster, elements, onPatch, onDelete, onDuplicate, onFront, 
-      customSize, setCustomSize, setSizeKey, onUnstitch, elementCount 
+      theme: t, selected, selectedIds, poster, elements, onPatch, onDelete, onDuplicate, onFront,
+      customSize, setCustomSize, setSizeKey, onUnstitch, elementCount,
+      onAlign, onDistribute, onMatchSize, showGrid, setShowGrid, gridMm, setGridMm, freeArrows, setFreeArrows
     }) {
       if (selectedIds.size > 1) {
         return (
           <div className="p-4">
             <div className={`text-[11px] uppercase tracking-[0.15em] mb-3 ${t.sub}`}>Multiple Selection</div>
-            <div className={`rounded-lg border p-3 text-sm flex flex-col gap-3 ${t.chip}`}>
+            <div className={`rounded-lg border p-3 text-sm flex flex-col gap-3 mb-3 ${t.chip}`}>
               <div className="flex justify-between items-center"><span className={t.sub}>Items</span><span className="tabular-nums font-semibold">{selectedIds.size}</span></div>
               <div className="grid grid-cols-2 gap-2 mt-1">
                  <button onClick={onFront} className={`h-8 rounded-md border text-xs flex items-center justify-center gap-1.5 ${t.hover}`}><BringToFront size={13} /> Front</button>
                  <button onClick={onDuplicate} className={`h-8 rounded-md border text-xs flex items-center justify-center gap-1.5 ${t.hover}`}><Copy size={13} /> Copy</button>
               </div>
-              <button onClick={onDelete} className="mt-2 w-full h-8 rounded-md bg-red-500/10 text-red-500 text-xs flex items-center justify-center gap-2 hover:bg-red-500/20 font-medium"><Trash2 size={13} /> Delete All</button>
+              <button onClick={onDelete} className="w-full h-8 rounded-md bg-red-500/10 text-red-500 text-xs flex items-center justify-center gap-2 hover:bg-red-500/20 font-medium"><Trash2 size={13} /> Delete all</button>
             </div>
+            <AlignTools t={t} onAlign={onAlign} onDistribute={onDistribute} onMatchSize={onMatchSize} count={selectedIds.size} />
           </div>
         );
       }
@@ -1361,6 +2703,24 @@
                <NumField t={t} label="Height (mm)" value={customSize.h} onChange={(v) => { setCustomSize(s => ({...s, h: v})); setSizeKey('custom'); }} />
             </div>
             
+            <div className={`rounded-lg border p-3 mt-3 ${t.chip}`}>
+              <div className={`text-[10px] uppercase tracking-[0.15em] mb-2 ${t.sub}`}>Canvas aids</div>
+              <label className="flex items-center gap-2 text-xs cursor-pointer mb-2">
+                <input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)} className="accent-cyan-500" />
+                Show grid
+              </label>
+              {showGrid && (
+                <div className="mb-2">
+                  <NumField t={t} label="Grid spacing (mm)" value={gridMm} onChange={v => setGridMm(Math.max(1, v))} min={1} max={200} />
+                </div>
+              )}
+              <label className="flex items-center gap-2 text-xs cursor-pointer">
+                <input type="checkbox" checked={freeArrows} onChange={e => setFreeArrows(e.target.checked)} className="accent-cyan-500" />
+                Free arrows (never attach)
+              </label>
+              <div className={`text-[10px] mt-2 leading-relaxed ${t.sub}`}>Hold <b>Alt</b> while drawing to detach a single arrow without changing this setting.</div>
+            </div>
+
             <div className={`mt-4 text-xs leading-relaxed ${t.sub}`}>
               <b>Move & Select:</b> Drag to move or resize. Drag on the canvas to marquee select, or press <b>Ctrl+A</b> to select everything.<br/><br/>
               <b>Images:</b> Click any image twice to enter <b>Crop Mode</b>. You can then pan the image inside its bounds and stretch the crop mask using the handles.<br/><br/>
@@ -1400,17 +2760,62 @@
            
            {type === 'section' && (
              <Group t={t} title={selected.custom ? 'Custom Section Settings' : 'Section Theme'}>
-                {selected.custom && (
-                  <label className="block mb-2">
-                    <span className={`text-[10px] mb-1 block ${t.sub}`}>Title</span>
-                    <input type="text" value={selected.title} onChange={e => onPatch({ title: e.target.value })} className={`w-full h-8 px-2 rounded-md border text-sm ${t.input}`} />
-                  </label>
-                )}
-                
-                <div className={`text-[10px] mt-2 mb-1 ${t.sub}`}>Corners</div>
+                <label className="block mb-2">
+                  <span className={`text-[10px] mb-1 block ${t.sub}`}>Title</span>
+                  <input type="text" value={selected.title || ''} onChange={e => onPatch({ title: e.target.value })} className={`w-full h-8 px-2 rounded-md border text-sm ${t.input}`} />
+                </label>
+
+                {selected.sectionKind !== 'banner' && (<>
+                  <div className={`text-[10px] mb-1 ${t.sub}`}>Header style</div>
+                  <div className="grid grid-cols-5 gap-1 mb-2">
+                    {HEADER_STYLES.map((h) => (
+                      <button key={h.key} title={h.label} onClick={() => onPatch({ headerStyle: h.key })}
+                        className={`h-8 rounded border text-[9px] leading-tight px-0.5 ${(selected.headerStyle || 'bar') === h.key ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>
+                        {h.label.split(' ')[0]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className={`text-[10px] mb-1 ${t.sub}`}>Header alignment</div>
+                  <div className="grid grid-cols-3 gap-1 mb-2">
+                    {[['left', AlignLeft], ['center', AlignCenter], ['right', AlignRight]].map(([a, I]) => (
+                      <button key={a} title={`Title ${a}`} onClick={() => onPatch({ titleAlign: a })}
+                        className={`h-8 grid place-items-center rounded border ${(selected.titleAlign || 'left') === a ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>
+                        <I size={14} />
+                      </button>
+                    ))}
+                  </div>
+                </>)}
+
+                <div className="flex gap-2 mb-2">
+                  <NumField t={t} label="Corner radius" value={Math.round(selected.radius || 0)} min={0} max={200} onChange={(v) => onPatch({ radius: v })} />
+                  <NumField t={t} label="Padding" value={Math.round(selected.padding ?? 10)} min={0} max={200} onChange={(v) => onPatch({ padding: v })} />
+                </div>
                 <div className="flex gap-1.5 mb-2">
-                   <button onClick={() => onPatch({ square: false })} className={`h-8 flex-1 rounded border text-xs ${!selected.square ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Rounded</button>
-                   <button onClick={() => onPatch({ square: true })} className={`h-8 flex-1 rounded border text-xs ${selected.square ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Square</button>
+                  <button onClick={() => onPatch({ radius: 0 })} className={`h-7 flex-1 rounded border text-[11px] ${!selected.radius ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Square corners</button>
+                  <button onClick={() => onPatch({ radius: 8 })} className={`h-7 flex-1 rounded border text-[11px] ${selected.radius ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Rounded</button>
+                </div>
+
+                <label className="block mb-2">
+                  <div className={`text-[10px] mb-1 ${t.sub}`}>Outline width: {(selected.borderW || 0).toFixed(1)} mm</div>
+                  <input type="range" min="0" max="12" step="0.5" value={selected.borderW || 0} onChange={(e) => onPatch({ borderW: +e.target.value })} className="w-full accent-cyan-500" />
+                </label>
+                <div className={`text-[10px] mb-1 ${t.sub}`}>Outline colour</div>
+                <ColorRow t={t} value={selected.borderColor || selected.accent} onChange={(c) => onPatch({ borderColor: c })}
+                         swatches={['#0f172a','#64748b','#dc2626','#0891b2','#16a34a','#ca8a04']} />
+
+                <div className={`text-[10px] mt-3 mb-1 ${t.sub}`}>Drop shadow</div>
+                <div className="grid grid-cols-4 gap-1 mb-1">
+                  {SHADOW_LEVELS.map((sh) => (
+                    <button key={sh.key} onClick={() => onPatch({ shadow: sh.key })}
+                      className={`h-8 rounded border text-[10px] ${(normShadow(selected.shadow)) === sh.key ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>
+                      {sh.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2 items-center mb-2">
+                  <div className={`text-[10px] ${t.sub}`}>Shadow colour</div>
+                  <input type="color" value={selected.shadowColor || '#0f172a'} onChange={(e) => onPatch({ shadowColor: e.target.value })}
+                         className="h-7 w-7 rounded-md border-0 bg-transparent cursor-pointer" />
                 </div>
 
                 <div className={`text-[10px] mt-2 mb-1 ${t.sub}`}>Accent</div>
@@ -1453,9 +2858,34 @@
                  <ColorRow t={t} value={selected.fill} onChange={(c) => onPatch({ fill: c })} swatches={['none','#cffafe','#fee2e2','#dcfce7','#ede9fe','#fef9c3']} />
                </>)}
                <label className="block mt-3">
-                 <div className={`text-[10px] mb-1 ${t.sub}`}>Stroke width: {selected.strokeWidth}px</div>
-                 <input type="range" min="1" max="20" value={selected.strokeWidth} onChange={(e) => onPatch({ strokeWidth: +e.target.value })} className="w-full accent-cyan-500" />
+                 <div className={`text-[10px] mb-1 ${t.sub}`}>Border width: {(+selected.strokeWidth || 0).toFixed(1)} mm</div>
+                 <input type="range" min="0" max="30" step="0.5" value={selected.strokeWidth} onChange={(e) => onPatch({ strokeWidth: +e.target.value })} className="w-full accent-cyan-500" />
                </label>
+               {type === 'shape' && (<>
+                 <label className="block mt-3">
+                   <div className={`text-[10px] mb-1 ${t.sub}`}>Corner radius: {Math.round(selected.cornerRadius || 0)} mm</div>
+                   <input type="range" min="0" max={Math.round(Math.min(selected.w, selected.h) / 2)} step="1"
+                          value={selected.cornerRadius || 0} onChange={(e) => onPatch({ cornerRadius: +e.target.value })}
+                          disabled={selected.shape !== 'rect'} className="w-full accent-cyan-500 disabled:opacity-40" />
+                 </label>
+                 <div className="flex gap-1.5 mt-2">
+                   <button onClick={() => onPatch({ cornerRadius: 0, miter: true })}
+                     className={`h-8 flex-1 rounded border text-[11px] ${!selected.cornerRadius ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}
+                     disabled={selected.shape !== 'rect'}>Square edges</button>
+                   <button onClick={() => onPatch({ cornerRadius: Math.round(Math.min(selected.w, selected.h) * 0.12) })}
+                     className={`h-8 flex-1 rounded border text-[11px] ${selected.cornerRadius ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}
+                     disabled={selected.shape !== 'rect'}>Rounded</button>
+                 </div>
+                 <div className="flex gap-1.5 mt-2">
+                   <button onClick={() => onPatch({ dashed: !selected.dashed })}
+                     className={`h-8 flex-1 rounded border text-[11px] ${selected.dashed ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Dashed</button>
+                   <button onClick={() => onPatch({ miter: selected.miter === false })}
+                     className={`h-8 flex-1 rounded border text-[11px] ${selected.miter === false ? 'bg-cyan-500/10 text-cyan-400 border-cyan-400' : t.chip}`}>Soft joins</button>
+                 </div>
+                 <div className={`text-[10px] mt-3 leading-relaxed ${t.sub}`}>
+                   Border width is in millimetres of poster space, so it prints exactly as shown — a 4 mm rule stays 4 mm at any zoom or output resolution.
+                 </div>
+               </>)}
              </Group>
            )}
 
@@ -1502,143 +2932,544 @@
       );
     }
 
-    function ExportModal({ theme: t, state, steps, onClose, onExportSVG, sizeKey, poster }) {
-      const pxW = Math.round((poster.w / 25.4) * 300), pxH = Math.round((poster.h / 25.4) * 300);
-      const methodMsg = state.method === 'pdf' ? 'PDF downloaded (true vector via jsPDF).'
-        : state.method === 'print' ? 'Opened a print view — choose “Save as PDF”.'
-        : 'Downloaded a print-ready HTML — open it and print to PDF.';
+
+
+    /* Menu previews rendered from the same path generator as the canvas, so
+       what you pick is exactly what you get. */
+    function ShapeGlyph({ preset, size = 22 }) {
+      const w = size, h = size * (preset.h / preset.w > 1.4 ? 1 : preset.h / preset.w);
+      const sw = 1.6;
+      const d = shapePath(preset.key === 'rect-round' ? 'rect' : preset.key, w - sw, h - sw,
+                          preset.cornerRadius ? (preset.cornerRadius / preset.w) * w : 0);
+      const open = OPEN_SHAPES.has(preset.key);
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-          <div onClick={(e) => e.stopPropagation()} className={`w-[420px] rounded-2xl border shadow-2xl overflow-hidden ${t.panel}`}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          <g transform={`translate(${sw / 2} ${(size - h) / 2 + sw / 2})`}>
+            <path d={d} fill={open ? 'none' : 'currentColor'} fillOpacity="0.18" stroke="currentColor" strokeWidth={sw} strokeLinejoin="round" />
+          </g>
+        </svg>
+      );
+    }
+
+    function SectionGlyph({ preset, size = 18 }) {
+      const k = preset.kind || 'plain';
+      const a = preset.accent;
+      const line = (y, w = 12, o = 0.45) => <rect key={y} x="3" y={y} width={w} height="1.4" rx="0.7" fill="currentColor" opacity={o} />;
+      return (
+        <svg width={size} height={size} viewBox="0 0 18 18" className="shrink-0">
+          <rect x="1" y="1" width="16" height="16" rx="2" fill={preset.fill} stroke={a} strokeWidth="0.8" />
+          {k === 'banner' && <><rect x="3" y="5" width="12" height="3" rx="1" fill={a} />{line(10, 8, 0.35)}</>}
+          {k === 'plain' && <><rect x="1" y="1" width="16" height="4" rx="1" fill={a} />{line(8)}{line(11)}{line(14, 8)}</>}
+          {(k === 'bullets' || k === 'numbered') && <><rect x="1" y="1" width="16" height="3.5" rx="1" fill={a} />
+            {[7, 10.5, 14].map((y) => <g key={y}><circle cx="4" cy={y} r="0.9" fill={a} /><rect x="6" y={y - 0.7} width="8" height="1.4" rx="0.7" fill="currentColor" opacity="0.4" /></g>)}</>}
+          {k === 'twocol' && <><rect x="1" y="1" width="16" height="3.5" rx="1" fill={a} />
+            {[7, 9.5, 12, 14.5].map((y) => <g key={y}><rect x="3" y={y} width="5.5" height="1.2" rx="0.6" fill="currentColor" opacity="0.4" /><rect x="9.5" y={y} width="5.5" height="1.2" rx="0.6" fill="currentColor" opacity="0.4" /></g>)}</>}
+          {k === 'figure' && <><rect x="3" y="3" width="12" height="8" rx="1" fill={a} opacity="0.3" stroke={a} strokeWidth="0.6" />{line(13, 12, 0.4)}</>}
+          {k === 'table' && <><rect x="2.5" y="3" width="13" height="3" fill={a} />
+            {[6, 9, 12].map((y) => <rect key={y} x="2.5" y={y} width="13" height="3" fill="none" stroke={a} strokeWidth="0.5" opacity="0.5" />)}
+            <line x1="9" y1="3" x2="9" y2="15" stroke={a} strokeWidth="0.5" opacity="0.5" /></>}
+          {k === 'callout' && <><rect x="1" y="1" width="2" height="16" fill={a} />{line(7, 11, 0.55)}{line(10.5, 9, 0.55)}</>}
+          {k === 'contact' && <><circle cx="5" cy="6" r="2" fill={a} />{line(10)}{line(13, 8)}</>}
+          {k === 'footer' && <><rect x="1" y="1" width="16" height="16" rx="2" fill={a} />
+            {[6, 9, 12].map((y) => <rect key={y} x="3" y={y} width="12" height="1.1" rx="0.5" fill="#fff" opacity="0.6" />)}</>}
+        </svg>
+      );
+    }
+
+    function ExportModal({ theme: t, state, poster, sizeKey, format, setFormat, dpi, setDpi, elementCount, onRun, onClose }) {
+      const raster = format === 'png' || format === 'jpg';
+      const plan = raster ? rasterPlan(poster, dpi) : null;
+      const busy = state?.busy;
+      const result = state?.result;
+      const inches = (mm) => (mm / 25.4).toFixed(1);
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={busy ? undefined : onClose}>
+          <div onClick={(e) => e.stopPropagation()} className={`w-[480px] max-w-[94vw] rounded-2xl border shadow-2xl overflow-hidden ${t.panel}`}>
             <div className="px-5 py-4 flex items-center justify-between border-b" style={{ borderColor: 'rgba(120,120,120,0.15)' }}>
               <div className="flex items-center gap-2 font-semibold"><Download size={16} className="text-cyan-400" /> Export poster</div>
-              <button onClick={onClose} className={`h-7 w-7 grid place-items-center rounded-md ${t.hover}`}><X size={15} /></button>
+              <button onClick={onClose} disabled={busy} className={`h-7 w-7 grid place-items-center rounded-md disabled:opacity-40 ${t.hover}`}><X size={15} /></button>
             </div>
+
             <div className="px-5 py-4">
-              <div className={`text-xs mb-4 ${t.sub}`}>
-                Target: <span className="font-medium">{sizeKey}</span> · {pxW.toLocaleString()} × {pxH.toLocaleString()} px @ 300 DPI · vector pipeline
+              <div className={`text-xs mb-3 ${t.sub}`}>
+                {sizeKey} · {poster.w} × {poster.h} mm ({inches(poster.w)}″ × {inches(poster.h)}″) · {elementCount} element{elementCount === 1 ? '' : 's'}
               </div>
-              <div className="space-y-2.5">
-                {steps.map((label, i) => {
-                  const done = state.done || state.step > i, active = !state.done && state.step === i;
+
+              <div className="grid grid-cols-2 gap-2">
+                {EXPORT_FORMATS.map((f) => {
+                  const active = format === f.key;
                   return (
-                    <div key={i} className="flex items-center gap-3 text-sm">
-                      <span className={`h-5 w-5 grid place-items-center rounded-full shrink-0 ${done ? 'bg-cyan-500 text-white' : active ? 'bg-cyan-500/20 text-cyan-400' : t.chip}`}>
-                        {done ? <Check size={12} /> : active ? <Loader2 size={12} className="animate-spin" /> : i + 1}
-                      </span>
-                      <span className={done || active ? '' : t.sub}>{label}</span>
-                    </div>
+                    <button key={f.key} onClick={() => setFormat(f.key)} disabled={busy}
+                      className={`text-left px-3 py-2.5 rounded-lg border transition disabled:opacity-50 ${active ? 'border-cyan-500 bg-cyan-500/10' : `${t.chip} ${t.hover}`}`}>
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <f.icon size={14} className={active ? 'text-cyan-400' : t.sub} />{f.label}
+                        {active && <Check size={13} className="text-cyan-400 ml-auto" />}
+                      </div>
+                      <div className={`text-[10.5px] leading-snug mt-1 ${t.sub}`}>{f.hint}</div>
+                    </button>
                   );
                 })}
               </div>
-              {state.done && (
-                <div className="mt-5 p-3 rounded-lg text-sm flex items-start gap-2" style={{ background: 'rgba(6,182,212,0.10)' }}>
-                  <Check size={16} className="text-cyan-400 mt-0.5 shrink-0" />
-                  <div><div className="font-medium">Export complete</div><div className={`text-xs mt-0.5 ${t.sub}`}>{methodMsg}</div></div>
+
+              {raster && (
+                <div className="mt-4">
+                  <div className={`text-[11px] uppercase tracking-[0.15em] mb-2 ${t.sub}`}>Resolution</div>
+                  <div className={`flex rounded-lg border overflow-hidden ${t.chip}`}>
+                    {DPI_OPTIONS.map((d) => (
+                      <button key={d} onClick={() => setDpi(d)} disabled={busy}
+                        className={`flex-1 h-9 text-xs font-medium transition ${dpi === d ? 'bg-cyan-500 text-white' : t.hover}`}>{d} DPI</button>
+                    ))}
+                  </div>
+                  <div className={`text-[11px] mt-2 tabular-nums ${t.sub}`}>
+                    Output: {plan.w.toLocaleString()} × {plan.h.toLocaleString()} px
+                    {plan.clamped && <span className="text-amber-400"> · capped by the browser canvas limit (effective {plan.dpi} DPI). Use PDF or SVG for full print resolution.</span>}
+                  </div>
+                </div>
+              )}
+
+              {format === 'pdf' && (
+                <div className={`text-[11px] mt-4 leading-relaxed ${t.sub}`}>
+                  Geometry and type stay as vectors, so the PDF is resolution-independent — a 300 DPI RIP and a 1200 DPI plotter both print it sharp. Page box is set to the exact poster dimensions, no scaling or crop.
+                </div>
+              )}
+
+              {(busy || result) && (
+                <div className="mt-4 p-3 rounded-lg text-sm flex items-start gap-2"
+                     style={{ background: result && !result.ok ? 'rgba(244,63,94,0.12)' : 'rgba(6,182,212,0.10)' }}>
+                  {busy ? <Loader2 size={16} className="text-cyan-400 mt-0.5 shrink-0 animate-spin" />
+                        : result.ok ? <Check size={16} className="text-cyan-400 mt-0.5 shrink-0" />
+                        : <X size={16} className="text-rose-400 mt-0.5 shrink-0" />}
+                  <div>
+                    <div className="font-medium">{busy ? 'Building your file…' : result.ok ? 'Export complete' : 'Export failed'}</div>
+                    {!busy && <div className={`text-xs mt-0.5 ${t.sub}`}>{result.detail}</div>}
+                  </div>
                 </div>
               )}
             </div>
+
             <div className="px-5 py-3 flex justify-end gap-2 border-t" style={{ borderColor: 'rgba(120,120,120,0.15)' }}>
-              <button onClick={onExportSVG} className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-2 ${t.chip} ${t.hover}`}><FileText size={14} /> Download SVG</button>
-              <button onClick={onClose} className="h-9 px-4 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 text-white text-sm font-medium">Done</button>
+              <button onClick={onClose} disabled={busy} className={`h-9 px-3 rounded-lg border text-sm disabled:opacity-40 ${t.chip} ${t.hover}`}>
+                {result ? 'Close' : 'Cancel'}
+              </button>
+              <button onClick={onRun} disabled={busy}
+                className="h-9 px-4 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 text-white text-sm font-medium flex items-center gap-2 disabled:opacity-60">
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                {result ? `Export ${format.toUpperCase()} again` : `Export ${format.toUpperCase()}`}
+              </button>
             </div>
           </div>
         </div>
       );
     }
 
-    /* ---- Export helpers ---- */
+    /* =========================================================================
+       EXPORT ENGINE
+       -------------------------------------------------------------------------
+       One authoritative serialiser (buildSVG) feeds three pipelines:
+         SVG  → the serialised string, saved as-is (lossless vector)
+         PDF  → svg2pdf/jsPDF, page size = poster size in mm (true vector)
+         PNG/JPG → the SVG painted into a canvas scaled to the requested DPI
+       Crop bug fix: the root <svg> now carries UNITLESS width/height that match
+       the viewBox exactly. Emitting "841mm" made svg2pdf resolve the intrinsic
+       size in CSS pixels (≈3178) while the page was 841 units wide, so the
+       artwork was drawn ~3.78× too large and clipped at the page edge.
+       ======================================================================= */
+
+    const EXPORT_FORMATS = [
+      { key: 'pdf', label: 'PDF',  hint: 'Print-ready vector · true 1:1 mm page', icon: FileText },
+      { key: 'svg', label: 'SVG',  hint: 'Lossless vector · editable in Illustrator/Inkscape', icon: Spline },
+      { key: 'png', label: 'PNG',  hint: 'Raster with transparency support', icon: ImagePlus },
+      { key: 'jpg', label: 'JPG',  hint: 'Raster, smaller files · no transparency', icon: ImagePlus },
+    ];
+    const DPI_OPTIONS = [150, 300, 600];
+    const MAX_CANVAS_SIDE = 16384;      // browser hard limit
+    const MAX_CANVAS_PIXELS = 200e6;    // practical memory ceiling
+
+    function rasterPlan(poster, dpi) {
+      const want = { w: Math.round((poster.w / 25.4) * dpi), h: Math.round((poster.h / 25.4) * dpi) };
+      let k = 1;
+      k = Math.min(k, MAX_CANVAS_SIDE / Math.max(want.w, want.h));
+      k = Math.min(k, Math.sqrt(MAX_CANVAS_PIXELS / (want.w * want.h)));
+      if (k >= 1) return { w: want.w, h: want.h, dpi, clamped: false };
+      return { w: Math.floor(want.w * k), h: Math.floor(want.h * k), dpi: Math.floor(dpi * k), clamped: true };
+    }
+
     function downloadBlob(blob, name) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-    }
-    
-    async function exportPDF(elements, byId, poster, sizeKey) {
-      const svg = buildSVG(elements, byId, poster);
-      try {
-        const jspdfMod = await import('https://esm.sh/jspdf@2.5.1');
-        const svg2pdfMod = await import('https://esm.sh/svg2pdf.js@3.0.0');
-        const jsPDF = jspdfMod.jsPDF || jspdfMod.default;
-        const doc = new jsPDF({ unit: 'mm', format: [poster.w, poster.h], orientation: poster.w > poster.h ? 'l' : 'p' });
-        const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
-        if (typeof doc.svg === 'function') await doc.svg(node, { x: 0, y: 0, width: poster.w, height: poster.h });
-        else await (svg2pdfMod.svg2pdf || svg2pdfMod.default)(node, doc, { x: 0, y: 0, width: poster.w, height: poster.h });
-        doc.save(`sciposter_${sizeKey}.pdf`);
-        return 'pdf';
-      } catch (_e) {
-        console.error(_e);
-        const html = `<!doctype html><html><head><meta charset="utf-8"><title>SciPoster ${sizeKey}</title>
-<style>@page{size:${poster.w}mm ${poster.h}mm;margin:0}html,body{margin:0}svg{display:block}</style></head>
-<body onload="setTimeout(function(){window.print()},250)">${svg}</body></html>`;
-        const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-        const win = window.open(url, '_blank');
-        if (win) { setTimeout(() => URL.revokeObjectURL(url), 8000); return 'print'; }
-        downloadBlob(new Blob([html], { type: 'text/html' }), `sciposter_${sizeKey}_print.html`);
-        URL.revokeObjectURL(url); return 'html';
-      }
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
     }
 
-    /* ---- Standalone SVG serialisation (mirrors on-canvas rendering) ---- */
-    function esc(s = '') { return String(s).replace(/[<>&"]/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;' }[c])); }
-    function wrapText(text, maxChars) {
-      const words = String(text).split(/\s+/); const lines = []; let line = '';
-      for (const w of words) { if ((line + ' ' + w).trim().length > maxChars) { if (line) lines.push(line); line = w; } else line = (line + ' ' + w).trim(); }
-      if (line) lines.push(line); return lines;
+    function exportSVGFile(svg, name) {
+      downloadBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), `${name}.svg`);
+      return { ok: true, detail: 'Vector SVG downloaded.' };
     }
-    
+
+    async function exportRaster(svg, poster, dpi, kind, name) {
+      const plan = rasterPlan(poster, dpi);
+      const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = await new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im); im.onerror = () => rej(new Error('SVG rasterisation failed'));
+          im.src = url;
+        });
+        const cv = document.createElement('canvas');
+        cv.width = plan.w; cv.height = plan.h;
+        const ctx = cv.getContext('2d');
+        if (kind === 'jpg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, plan.w, plan.h); }
+        ctx.drawImage(img, 0, 0, plan.w, plan.h);
+        const out = await new Promise((res) => cv.toBlob(res, kind === 'jpg' ? 'image/jpeg' : 'image/png', 0.94));
+        downloadBlob(out, `${name}.${kind === 'jpg' ? 'jpg' : 'png'}`);
+        return { ok: true, detail: `${plan.w.toLocaleString()} × ${plan.h.toLocaleString()} px at ${plan.dpi} DPI.` +
+          (plan.clamped ? ' Capped to the browser canvas limit — use PDF or SVG for full resolution.' : '') };
+      } finally { URL.revokeObjectURL(url); }
+    }
+
+    async function exportPDFFile(svg, poster, name) {
+      const jspdfMod = await import('https://esm.sh/jspdf@2.5.1');
+      await import('https://esm.sh/svg2pdf.js@2.2.1');
+      const jsPDF = jspdfMod.jsPDF || jspdfMod.default;
+      const doc = new jsPDF({
+        unit: 'mm',
+        format: [poster.w, poster.h],
+        orientation: poster.w > poster.h ? 'landscape' : 'portrait',
+        compress: true,
+      });
+      const node = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+      // Mount off-screen: svg2pdf needs a laid-out node to resolve geometry.
+      const holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;left:-99999px;top:0;opacity:0;pointer-events:none';
+      holder.appendChild(node); document.body.appendChild(holder);
+      try {
+        await doc.svg(node, { x: 0, y: 0, width: poster.w, height: poster.h });
+        doc.save(`${name}.pdf`);
+        return { ok: true, detail: `Vector PDF · ${poster.w} × ${poster.h} mm page, full bleed, no cropping.` };
+      } finally { holder.remove(); }
+    }
+
+    /* Fallback when the PDF libraries can't be reached (offline / blocked CDN):
+       a page-exact print document the user can "Save as PDF" from. Only ever
+       reached after an explicit failure — never as the default path. */
+    function exportPrintFallback(svg, poster, name) {
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>${name}</title>
+<style>@page{size:${poster.w}mm ${poster.h}mm;margin:0}html,body{margin:0;padding:0}svg{display:block;width:${poster.w}mm;height:${poster.h}mm}</style>
+</head><body>${svg}<script>window.onload=function(){setTimeout(function(){window.print()},400)}<\/script></body></html>`;
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const win = window.open(url, '_blank');
+      if (win) { setTimeout(() => URL.revokeObjectURL(url), 20000); return { ok: true, detail: 'PDF libraries unreachable — opened a page-exact print view instead. Choose “Save as PDF”, and set margins to None.' }; }
+      downloadBlob(new Blob([html], { type: 'text/html' }), `${name}_print.html`);
+      URL.revokeObjectURL(url);
+      return { ok: true, detail: 'Popup blocked — downloaded a print-ready HTML file instead. Open it and print to PDF.' };
+    }
+
+    /* ---- SVG serialisation (mirrors the on-canvas renderers) ---- */
+    function esc(s = '') { return String(s).replace(/[<>&"']/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;' }[c])); }
+
+    /* Greedy wrap using an average-advance estimate. AVG_ADVANCE is the mean
+       glyph width as a fraction of the em for common UI/serif faces. */
+    const AVG_ADVANCE = 0.5;
+    function wrapToWidth(text, fontSize, maxWidth, bold) {
+      const per = fontSize * AVG_ADVANCE * (bold ? 1.06 : 1);
+      const maxChars = Math.max(4, Math.floor(maxWidth / per));
+      const out = [];
+      for (const para of String(text ?? '').split('\n')) {
+        if (!para.trim()) { out.push(''); continue; }
+        let line = '';
+        for (const w of para.split(/\s+/)) {
+          if (line && (line + ' ' + w).length > maxChars) { out.push(line); line = w; }
+          else line = line ? line + ' ' + w : w;
+        }
+        out.push(line);
+      }
+      return out;
+    }
+
+    function svgText(x, y, str, { size, family, weight = 400, fill, anchor = 'start' }) {
+      return `<text x="${+x.toFixed(2)}" y="${+y.toFixed(2)}" font-family="${esc(family || 'sans-serif')}" font-size="${+size.toFixed(2)}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}" xml:space="preserve">${esc(str)}</text>`;
+    }
+
+    /* Emit one wrapped line as a <text> with a <tspan> per styled run. Because
+       wrapping used real measured advances, x positioning for centre/right
+       anchors is exact rather than estimated.                                  */
+    function svgRichLine(x, y, runs, { anchor = 'start', family, defaultFill }) {
+      if (!runs.length) return '';
+      const spans = runs.map((r) => {
+        const parts = [];
+        const fam = r.family || family || 'sans-serif';
+        parts.push(`font-family="${esc(fam)}"`);
+        parts.push(`font-size="${+(r.sizeAbs || r.size).toFixed(2)}"`);
+        parts.push(`font-weight="${r.bold ? 700 : 400}"`);
+        if (r.italic) parts.push('font-style="italic"');
+        const deco = [r.underline ? 'underline' : '', r.strike ? 'line-through' : ''].filter(Boolean).join(' ');
+        if (deco) parts.push(`text-decoration="${deco}"`);
+        parts.push(`fill="${r.color || defaultFill}"`);
+        return `<tspan ${parts.join(' ')} xml:space="preserve">${esc(r.text)}</tspan>`;
+      }).join('');
+      return `<text x="${+x.toFixed(2)}" y="${+y.toFixed(2)}" text-anchor="${anchor}" xml:space="preserve">${spans}</text>`;
+    }
+
+    /* Lay out rich blocks into a box and push the SVG. Returns the y cursor. */
+    function layoutRichBlocks(blocks, out, opts) {
+      const { x, y0, width, lineHeight, align, family, fill, maxY, accent, size } = opts;
+      const anchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
+      let y = y0;
+      for (const b of blocks) {
+        const isList = !!b.list;
+        const lst = isList ? (listByKey[b.list] || listByKey.disc) : null;
+        const markerTxt = isList ? lst.marker(b.listIndex || 0) : '';
+        const markerW = isList ? Math.max(measureText(markerTxt + ' ', { size, weight: 600, family }), size * (ORDERED_LISTS.has(b.list) ? 1.5 : 0.9)) + size * 0.25 : 0;
+        const avail = width - markerW;
+        const runs = b.runs.filter(r => r.text !== '');
+
+        if (!runs.length) { y += lineHeight; continue; }
+
+        const wrapped = wrapRuns(runs, avail);
+        wrapped.forEach((lineRuns, li) => {
+          if (y > maxY) return;
+          if (isList && li === 0) {
+            out.push(svgRichLine(x, y, [{ text: markerTxt, size, family, bold: true, color: accent || fill }],
+                     { anchor: 'start', family, defaultFill: accent || fill }));
+          }
+          const lw = lineWidth(lineRuns);
+          const tx = anchor === 'middle' ? x + markerW + avail / 2
+                   : anchor === 'end'    ? x + markerW + avail
+                   : x + markerW;
+          out.push(svgRichLine(tx, y, lineRuns, { anchor, family, defaultFill: fill }));
+          y += lineHeight;
+        });
+      }
+      return y;
+    }
+
+    function serialiseSection(el, out, clipId) {
+      const pad = el.padding ?? 10;
+      const kind = el.sectionKind || 'plain';
+      const hs = el.headerStyle || 'bar';
+      const family = el.fontFamily || 'sans-serif';
+      const rx = el.radius || 0;
+      const inner = el.w - pad * 2;
+      const baseStyle = { size: el.fontSize, family, color: el.color, bold: false, italic: false };
+      const lh = el.fontSize * el.lineHeight;
+      let cursor = 0;
+
+      // Drop shadow, drawn as a real blurred rect so it survives into PDF/PNG.
+      const shLv = shadowByKey[normShadow(el.shadow)];
+      if (shLv && shLv.key !== 'none') {
+        const fid = `sh_${clipId}`;
+        out.push(`<defs><filter id="${fid}" x="-25%" y="-25%" width="150%" height="150%">`
+          + `<feDropShadow dx="0" dy="${shLv.dy}" stdDeviation="${shLv.blur / 2}" flood-color="${el.shadowColor || '#0f172a'}" flood-opacity="${shLv.alpha}"/>`
+          + `</filter></defs>`);
+        out.push(`<rect x="0" y="0" width="${el.w}" height="${el.h}" rx="${rx}" ry="${rx}" fill="${el.fill}" filter="url(#${fid})"/>`);
+      }
+
+      out.push(`<rect x="0" y="0" width="${el.w}" height="${el.h}" rx="${rx}" ry="${rx}" fill="${el.fill}"/>`);
+      if (el.borderW) out.push(`<rect x="${el.borderW / 2}" y="${el.borderW / 2}" width="${el.w - el.borderW}" height="${el.h - el.borderW}" rx="${rx}" ry="${rx}" fill="none" stroke="${el.borderColor || el.accent}" stroke-width="${el.borderW}"/>`);
+
+      /* ---- Header (never for banner — the banner owns its own title) ---- */
+      const hFs = Math.max(8, el.fontSize * 1.35);
+      const tAlign = el.titleAlign || 'left';
+      if (kind !== 'banner' && el.title && hs !== 'none') {
+        const tw = measureText(el.title, { size: hFs, weight: 700, family });
+        const tAnchor = tAlign === 'center' ? 'middle' : tAlign === 'right' ? 'end' : 'start';
+        const tX = tAlign === 'center' ? el.w / 2 : tAlign === 'right' ? el.w - pad : pad;
+        if (hs === 'bar') {
+          const hh = hFs * 1.1 + pad * 1.1;
+          out.push(`<rect x="0" y="0" width="${el.w}" height="${hh}" fill="${el.accent}"/>`);
+          out.push(svgText(tX, hh / 2 + hFs * 0.36, el.title, { size: hFs, family, weight: 700, fill: '#ffffff', anchor: tAnchor }));
+          cursor = hh;
+        } else if (hs === 'tab') {
+          const boxW = Math.min(tw + pad * 2, el.w - pad * 2);
+          const th = hFs * 1.1 + pad * 0.7;
+          const bx = tAlign === 'center' ? (el.w - boxW) / 2 : tAlign === 'right' ? el.w - pad - boxW : pad;
+          out.push(`<rect x="${bx}" y="${pad * 0.5}" width="${boxW}" height="${th}" rx="${rx * 0.8}" fill="${el.accent}"/>`);
+          out.push(svgText(bx + pad, pad * 0.5 + th / 2 + hFs * 0.36, el.title, { size: hFs, family, weight: 700, fill: '#ffffff' }));
+          cursor = pad * 0.5 + th;
+        } else if (hs === 'underline') {
+          const baseY = pad * 0.6 + hFs;
+          out.push(svgText(tX, baseY, el.title, { size: hFs, family, weight: 700, fill: el.accent, anchor: tAnchor }));
+          const ly = baseY + pad * 0.35;
+          out.push(`<line x1="${pad}" y1="${ly}" x2="${el.w - pad}" y2="${ly}" stroke="${el.accent}" stroke-width="${Math.max(0.4, hFs * 0.09)}"/>`);
+          cursor = ly;
+        } else {
+          out.push(svgText(tX, pad * 0.6 + hFs, el.title, { size: hFs, family, weight: 700, fill: el.accent, anchor: tAnchor }));
+          cursor = pad * 0.6 + hFs;
+        }
+      }
+
+      const bodyTop = cursor + pad;
+      const maxY = el.h - pad * 0.3;
+
+      /* ---- Banner: title + authors, both centred, measured for real ---- */
+      if (kind === 'banner') {
+        const tFs = el.fontSize * 2.6;
+        const titleBlocks = el.titleHtml != null
+          ? htmlToBlocks(el.titleHtml, { ...baseStyle, size: tFs, color: el.color })
+          : plainToBlocks(el.title, { ...baseStyle, size: tFs, color: el.color });
+        const subSize = el.fontSize * 1.15;
+        const subBlocks = elBlocks(el, { ...baseStyle, size: subSize, color: el.color });
+
+        // Pre-wrap both halves so the whole stack can be vertically centred.
+        const tLines = titleBlocks.flatMap(b => wrapRuns(b.runs.filter(r => r.text !== ''), inner));
+        const sLines = subBlocks.flatMap(b => wrapRuns(b.runs.filter(r => r.text !== ''), inner));
+        const tLH = tFs * 1.1, sLH = subSize * 1.35;
+        const totalH = tLines.filter(l => l.length).length * tLH + sLines.filter(l => l.length).length * sLH + pad * 0.35;
+        let y = Math.max(pad + tFs * 0.85, (el.h - totalH) / 2 + tFs * 0.85);
+
+        tLines.forEach((lineRuns) => {
+          if (!lineRuns.length || y > maxY) return;
+          out.push(svgRichLine(el.w / 2, y, lineRuns, { anchor: 'middle', family, defaultFill: el.color }));
+          y += tLH;
+        });
+        y += pad * 0.35;
+        sLines.forEach((lineRuns) => {
+          if (!lineRuns.length || y > maxY) return;
+          out.push(svgRichLine(el.w / 2, y, lineRuns, { anchor: 'middle', family, defaultFill: el.color }));
+          y += sLH;
+        });
+        return;
+      }
+
+      if (kind === 'callout') {
+        const blocks = elBlocks(el, { ...baseStyle, bold: true });
+        const all = blocks.flatMap(b => wrapRuns(b.runs.filter(r => r.text !== ''), inner));
+        const totalH = all.filter(l => l.length).length * lh;
+        let y = (el.h - totalH) / 2 + el.fontSize * 0.85;
+        const anchor = el.align === 'center' ? 'middle' : el.align === 'right' ? 'end' : 'start';
+        const cx = el.align === 'center' ? el.w / 2 : el.align === 'right' ? el.w - pad : pad;
+        all.forEach((lineRuns) => {
+          if (!lineRuns.length || y > maxY) return;
+          out.push(svgRichLine(cx, y, lineRuns.map(r => ({ ...r, bold: true })), { anchor, family, defaultFill: el.color }));
+          y += lh;
+        });
+        return;
+      }
+
+      if (kind === 'figure') {
+        const capFs = el.fontSize * 0.92;
+        const capBlocks = elBlocks(el, { ...baseStyle, size: capFs });
+        const titleRun = el.title ? [{ text: el.title + '. ', size: capFs, family, bold: true, color: el.accent }] : [];
+        if (capBlocks.length && titleRun.length) capBlocks[0] = { ...capBlocks[0], runs: [...titleRun, ...capBlocks[0].runs] };
+        const capLines = capBlocks.flatMap(b => wrapRuns(b.runs.filter(r => r.text !== ''), inner));
+        const capH = Math.max(1, capLines.filter(l => l.length).length) * capFs * el.lineHeight + pad * 0.5;
+        const imgH = Math.max(0, el.h - bodyTop - capH - pad * 0.5);
+        if (el.src) out.push(`<image x="${pad}" y="${bodyTop}" width="${inner}" height="${imgH}" preserveAspectRatio="${el.fit === 'cover' ? 'xMidYMid slice' : 'xMidYMid meet'}" href="${el.src}"/>`);
+        else out.push(`<rect x="${pad}" y="${bodyTop}" width="${inner}" height="${imgH}" fill="rgba(100,116,139,0.10)" stroke="${el.accent}" stroke-width="0.4" stroke-dasharray="3 3"/>`);
+        let y = bodyTop + imgH + pad * 0.5 + capFs;
+        capLines.forEach((lineRuns) => {
+          if (!lineRuns.length || y > maxY) return;
+          out.push(svgRichLine(pad, y, lineRuns, { anchor: 'start', family, defaultFill: el.color }));
+          y += capFs * el.lineHeight;
+        });
+        return;
+      }
+
+      if (kind === 'table') {
+        const rows = el.rows || [];
+        const cols = Math.max(1, ...rows.map(r => r.length));
+        const cw = inner / cols;
+        const rh = Math.min((el.h - bodyTop - pad) / Math.max(1, rows.length), el.fontSize * 2.2);
+        rows.forEach((r, ri) => {
+          const y = bodyTop + ri * rh;
+          if (y + rh > el.h - pad * 0.2) return;
+          if (ri === 0) out.push(`<rect x="${pad}" y="${y}" width="${inner}" height="${rh}" fill="${el.accent}"/>`);
+          else if (ri % 2) out.push(`<rect x="${pad}" y="${y}" width="${inner}" height="${rh}" fill="rgba(100,116,139,0.07)"/>`);
+          for (let ci = 0; ci < cols; ci++) {
+            out.push(`<rect x="${pad + ci * cw}" y="${y}" width="${cw}" height="${rh}" fill="none" stroke="rgba(100,116,139,0.45)" stroke-width="0.3"/>`);
+            out.push(svgText(pad + ci * cw + cw * 0.08, y + rh / 2 + el.fontSize * 0.35, String(r[ci] ?? ''),
+              { size: el.fontSize, family, weight: ri === 0 ? 700 : 400, fill: ri === 0 ? '#ffffff' : el.color }));
+          }
+        });
+        return;
+      }
+
+      /* ---- Default: rich body (paragraphs + inline lists) ---- */
+      layoutRichBlocks(elBlocks(el, baseStyle), out, {
+        x: pad, y0: bodyTop + el.fontSize * 0.85, width: inner, lineHeight: lh,
+        align: el.align, family, fill: el.color, maxY, accent: el.accent, size: el.fontSize,
+      });
+    }
+
     function buildSVG(elements, byId, poster) {
-      const p = [];
-      p.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${poster.w}mm" height="${poster.h}mm" viewBox="0 0 ${poster.w} ${poster.h}">`);
-      p.push(`<rect width="${poster.w}" height="${poster.h}" fill="#ffffff"/>`);
+      const body = [];
       const defs = [];
+      let clipSeq = 0;
+
       for (const el of elements) {
-        if (el.type === 'section') {
-          p.push(`<rect x="${el.x}" y="${el.y}" width="${el.w}" height="${el.h}" rx="${el.square ? 0 : 6}" fill="${el.fill}"/>`);
-          p.push(`<rect x="${el.x}" y="${el.y}" width="${el.w}" height="26" fill="${el.accent}"/>`);
-          p.push(`<text x="${el.x+10}" y="${el.y+18}" font-family="${esc(el.fontFamily || 'sans-serif')}" font-size="${Math.max(13, el.fontSize+2)}" font-weight="700" fill="#fff">${esc(el.title)}</text>`);
-          wrapText(el.text, Math.max(10, Math.floor(el.w/(el.fontSize*0.5)))).forEach((ln, i) => {
-            const ty = el.y + 40 + i*el.fontSize*el.lineHeight;
-            if (ty < el.y+el.h-4) p.push(`<text x="${el.x+10}" y="${ty}" font-family="${esc(el.fontFamily || 'sans-serif')}" font-size="${el.fontSize}" fill="${el.color}">${esc(ln)}</text>`);
-          });
-        } else if (el.type === 'text') {
-          const anchor = el.align === 'center' ? 'middle' : el.align === 'right' ? 'end' : 'start';
-          const tx = el.align === 'center' ? el.x+el.w/2 : el.align === 'right' ? el.x+el.w-8 : el.x+8;
-          wrapText(el.text, Math.max(8, Math.floor(el.w/(el.fontSize*0.52)))).forEach((ln, i) => {
-            const ty = el.y + el.fontSize + i*el.fontSize*el.lineHeight + 4;
-            p.push(`<text x="${tx}" y="${ty}" font-family="${esc(el.fontFamily || 'sans-serif')}" font-size="${el.fontSize}" font-weight="${el.bold?700:400}" fill="${el.color}" text-anchor="${anchor}">${esc(ln)}</text>`);
-          });
-        } else if (el.type === 'image') {
-          p.push(`<svg x="${el.x}" y="${el.y}" width="${el.w}" height="${el.h}">`);
-          p.push(`<image x="${(el.imgX ?? el.x) - el.x}" y="${(el.imgY ?? el.y) - el.y}" width="${el.imgW ?? el.w}" height="${el.imgH ?? el.h}" preserveAspectRatio="none" href="${el.src}"/>`);
-          p.push(`</svg>`);
-        } else if (el.type === 'shape') {
-          const sw = el.strokeWidth;
-          if (el.shape === 'rect') p.push(`<rect x="${el.x+sw/2}" y="${el.y+sw/2}" width="${el.w-sw}" height="${el.h-sw}" rx="4" fill="${el.fill}" stroke="${el.stroke}" stroke-width="${sw}"/>`);
-          else p.push(`<ellipse cx="${el.x+el.w/2}" cy="${el.y+el.h/2}" rx="${el.w/2-sw/2}" ry="${el.h/2-sw/2}" fill="${el.fill}" stroke="${el.stroke}" stroke-width="${sw}"/>`);
-        } else if (el.type === 'path') {
-          p.push(`<polyline points="${el.points.map((q) => `${q.x},${q.y}`).join(' ')}" fill="none" stroke="${el.stroke}" stroke-width="${el.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>`);
-        } else if (el.type === 'connector') {
+        if (el.visible === false) continue;
+        const op = el.opacity ?? 1;
+        const opAttr = op < 1 ? ` opacity="${op}"` : '';
+
+        if (el.type === 'connector') {
           const v = variantByKey[el.variant] || variantByKey.arrow;
           const { A, B } = resolveConnector(el, byId);
           const d = connectorPath(A, B, v.routing);
-          const headSVG = (id, kind) => kind === 'triangle' ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L8,3.5 L0,7 Z" fill="${el.stroke}"/></marker>`
-            : kind === 'open' ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L8,3.5 L0,7" fill="none" stroke="${el.stroke}" stroke-width="1.4"/></marker>`
-            : kind === 'dot' ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="3.5" refY="3.5" orient="auto" markerUnits="strokeWidth"><circle cx="3.5" cy="3.5" r="3" fill="${el.stroke}"/></marker>` : '';
-          const sId = `s${el.id}`, eId = `e${el.id}`;
-          if (v.startHead !== 'none') defs.push(headSVG(sId, v.startHead));
-          if (v.endHead !== 'none') defs.push(headSVG(eId, v.endHead));
-          p.push(`<path d="${d}" fill="none" stroke="${el.stroke}" stroke-width="${el.strokeWidth}" stroke-linecap="round" ${el.dashed?'stroke-dasharray="10 7"':''} ${v.startHead!=='none'?`marker-start="url(#${sId})"`:''} ${v.endHead!=='none'?`marker-end="url(#${eId})"`:''}/>`);
+          const head = (id, kind) =>
+            kind === 'triangle' ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L8,3.5 L0,7 Z" fill="${el.stroke}"/></marker>`
+          : kind === 'open'     ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M0,0 L8,3.5 L0,7" fill="none" stroke="${el.stroke}" stroke-width="1.4"/></marker>`
+          : kind === 'dot'      ? `<marker id="${id}" markerWidth="10" markerHeight="10" refX="3.5" refY="3.5" orient="auto" markerUnits="strokeWidth"><circle cx="3.5" cy="3.5" r="3" fill="${el.stroke}"/></marker>` : '';
+          const sId = `s_${el.id}`, eId = `e_${el.id}`;
+          if (v.startHead !== 'none') defs.push(head(sId, v.startHead));
+          if (v.endHead !== 'none') defs.push(head(eId, v.endHead));
+          body.push(`<path d="${d}" fill="none" stroke="${el.stroke}" stroke-width="${el.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${el.dashed ? ` stroke-dasharray="${el.strokeWidth * 3} ${el.strokeWidth * 2}"` : ''}${v.startHead !== 'none' ? ` marker-start="url(#${sId})"` : ''}${v.endHead !== 'none' ? ` marker-end="url(#${eId})"` : ''}${opAttr}/>`);
+          continue;
         }
+
+        if (el.type === 'path') {
+          const cx = el.x + el.w / 2, cy = el.y + el.h / 2;
+          const rot = el.rot ? ` transform="rotate(${el.rot} ${cx} ${cy})"` : '';
+          body.push(`<polyline points="${el.points.map(q => `${+q.x.toFixed(2)},${+q.y.toFixed(2)}`).join(' ')}" fill="none" stroke="${el.stroke}" stroke-width="${el.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${rot}${opAttr}/>`);
+          continue;
+        }
+
+        // Box elements share a local coordinate frame: translate to (x,y) and
+        // rotate about the box centre, so children can be authored at origin.
+        const rot = el.rot ? ` rotate(${el.rot} ${el.w / 2} ${el.h / 2})` : '';
+        const out = [];
+
+        if (el.type === 'section') {
+          const clipId = `clip_${++clipSeq}`;
+          defs.push(`<clipPath id="${clipId}"><rect x="0" y="0" width="${el.w}" height="${el.h}" rx="${el.radius || 0}" ry="${el.radius || 0}"/></clipPath>`);
+          out.push(`<g clip-path="url(#${clipId})">`);
+          serialiseSection(el, out, clipId);
+          out.push(`</g>`);
+        } else if (el.type === 'text') {
+          const px = 8;
+          const family = el.fontFamily || 'sans-serif';
+          layoutRichBlocks(elBlocks(el, { size: el.fontSize, family, color: el.color, bold: !!el.bold, italic: !!el.italic }), out, {
+            x: px, y0: el.fontSize * 0.85 + px, width: el.w - px * 2, lineHeight: el.fontSize * el.lineHeight,
+            align: el.align, family, fill: el.color, maxY: el.h + el.fontSize, accent: el.color, size: el.fontSize,
+          });
+        } else if (el.type === 'image') {
+          const clipId = `clip_${++clipSeq}`;
+          defs.push(`<clipPath id="${clipId}"><rect x="0" y="0" width="${el.w}" height="${el.h}"/></clipPath>`);
+          out.push(`<g clip-path="url(#${clipId})"><image x="${(el.imgX ?? el.x) - el.x}" y="${(el.imgY ?? el.y) - el.y}" width="${el.imgW ?? el.w}" height="${el.imgH ?? el.h}" preserveAspectRatio="none" href="${el.src}"/></g>`);
+        } else if (el.type === 'shape') {
+          const sw = el.strokeWidth || 0;
+          const iw = Math.max(1, el.w - sw), ih = Math.max(1, el.h - sw);
+          const d = shapePath(el.shape, iw, ih, el.cornerRadius || 0);
+          const open = OPEN_SHAPES.has(el.shape) || el.fill === 'none';
+          out.push(`<g transform="translate(${sw / 2} ${sw / 2})"><path d="${d}" fill="${open ? 'none' : el.fill}" stroke="${el.stroke}" stroke-width="${sw}" stroke-linejoin="${el.miter === false ? 'round' : 'miter'}" stroke-linecap="butt"${el.dashed ? ` stroke-dasharray="${sw * 3} ${sw * 2}"` : ''}/></g>`);
+        }
+
+        body.push(`<g transform="translate(${+el.x.toFixed(2)} ${+el.y.toFixed(2)})${rot}"${opAttr}>${out.join('')}</g>`);
       }
-      if (defs.length) p.splice(1, 0, `<defs>${defs.join('')}</defs>`);
-      p.push(`</svg>`);
-      return p.join('\n');
+
+      // Unitless width/height matching the viewBox — the crop fix.
+      return [
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${poster.w}" height="${poster.h}" viewBox="0 0 ${poster.w} ${poster.h}">`,
+        defs.length ? `<defs>${defs.join('')}</defs>` : '',
+        `<rect x="0" y="0" width="${poster.w}" height="${poster.h}" fill="#ffffff"/>`,
+        body.join('\n'),
+        `</svg>`,
+      ].filter(Boolean).join('\n');
     }
 
     const root = createRoot(document.getElementById('root'));
-    root.render(<SciPosterStudio />);
+    root.render(<PosterettoStudio />);
   </script>
 </body>
 </html>
